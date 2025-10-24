@@ -4,6 +4,8 @@
 """
 import sqlite3
 import os
+import time
+import threading
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -12,13 +14,27 @@ class DatabaseManager:
     
     def __init__(self, db_path: str = "inventory.db"):
         self.db_path = db_path
+        self._lock = threading.Lock()  # 线程锁
+        self.max_retries = 3  # 最大重试次数
+        self.retry_delay = 0.1  # 重试延迟（秒）
         self.init_database()
     
     def get_connection(self) -> sqlite3.Connection:
-        """获取数据库连接"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # 使结果可以按列名访问
-        return conn
+        """获取数据库连接，支持重试机制"""
+        for attempt in range(self.max_retries):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=10.0)  # 10秒超时
+                conn.row_factory = sqlite3.Row
+                # 启用WAL模式提高并发性能
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA cache_size=10000")
+                return conn
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay * (attempt + 1))  # 递增延迟
+                    continue
+                raise
     
     def init_database(self):
         """初始化数据库表结构"""
@@ -116,3 +132,46 @@ class DatabaseManager:
         new_id = cursor.lastrowid
         conn.close()
         return new_id
+    
+    def execute_transaction(self, operations: List[tuple]) -> bool:
+        """执行事务操作，确保原子性"""
+        with self._lock:  # 使用锁确保事务的原子性
+            conn = None
+            try:
+                conn = self.get_connection()
+                cursor = conn.cursor()
+                
+                for query, params in operations:
+                    cursor.execute(query, params)
+                
+                conn.commit()
+                return True
+            except Exception as e:
+                if conn:
+                    conn.rollback()
+                raise e
+            finally:
+                if conn:
+                    conn.close()
+    
+    def get_material_with_version(self, material_id: int) -> Optional[Dict[str, Any]]:
+        """获取物料信息，包含版本号用于乐观锁"""
+        query = "SELECT *, updated_at as version FROM materials WHERE id = ?"
+        results = self.execute_query(query, (material_id,))
+        return results[0] if results else None
+    
+    def update_material_with_version(self, material_id: int, data: dict, expected_version: str) -> bool:
+        """使用乐观锁更新物料信息"""
+        query = '''
+            UPDATE materials 
+            SET name=?, category=?, description=?, quantity=?, unit=?, 
+                min_stock=?, location=?, supplier=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND updated_at=?
+        '''
+        params = (
+            data['name'], data['category'], data['description'],
+            data['quantity'], data['unit'], data['min_stock'],
+            data['location'], data['supplier'], material_id, expected_version
+        )
+        affected = self.execute_update(query, params)
+        return affected > 0

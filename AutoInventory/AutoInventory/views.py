@@ -500,6 +500,9 @@ class MainWindow:
         self.report_frame = ttk.Frame(notebook)
         notebook.add(self.report_frame, text="报告生成")
         self.setup_report_tab()
+        
+        # 状态栏
+        self.setup_status_bar()
     
     def create_menu(self):
         """创建菜单栏"""
@@ -625,6 +628,42 @@ class MainWindow:
         ttk.Button(button_frame, text="生成报告", command=self.generate_report).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="刷新订单列表", command=self.refresh_report_orders).pack(side=tk.LEFT, padx=5)
     
+    def setup_status_bar(self):
+        """设置状态栏"""
+        self.status_frame = ttk.Frame(self.root)
+        self.status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=2)
+        
+        # 状态信息
+        self.status_var = tk.StringVar()
+        self.status_var.set("就绪 - 支持多用户并发访问")
+        status_label = ttk.Label(self.status_frame, textvariable=self.status_var, relief=tk.SUNKEN)
+        status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # 连接状态指示器
+        self.connection_status = ttk.Label(self.status_frame, text="🟢 数据库连接正常", relief=tk.SUNKEN)
+        self.connection_status.pack(side=tk.RIGHT, padx=(5, 0))
+        
+        # 定期检查数据库连接状态
+        self.check_connection_status()
+    
+    def check_connection_status(self):
+        """检查数据库连接状态"""
+        try:
+            # 尝试执行一个简单的查询
+            self.material_controller.get_all_materials()
+            self.connection_status.config(text="🟢 数据库连接正常")
+        except Exception as e:
+            self.connection_status.config(text="🔴 数据库连接异常")
+        
+        # 每5秒检查一次
+        self.root.after(5000, self.check_connection_status)
+    
+    def update_status(self, message: str):
+        """更新状态栏信息"""
+        self.status_var.set(message)
+        # 3秒后恢复默认状态
+        self.root.after(3000, lambda: self.status_var.set("就绪 - 支持多用户并发访问"))
+    
     def add_material(self):
         """添加物料"""
         dialog = MaterialDialog(self.root)
@@ -646,18 +685,43 @@ class MainWindow:
         
         item = self.material_tree.item(selection[0])
         material_id = item['values'][0]
-        material = self.material_controller.get_material(material_id)
         
-        if material:
-            dialog = MaterialDialog(self.root, material)
-            updated_material = dialog.show()
-            if updated_material:
-                try:
-                    self.material_controller.update_material(updated_material)
-                    messagebox.showinfo("成功", "物料更新成功")
+        # 获取物料信息，包含版本号
+        material_data = self.material_controller.db.get_material_with_version(material_id)
+        if not material_data:
+            messagebox.showerror("错误", "物料不存在")
+            return
+        
+        material = Material.from_dict(material_data)
+        dialog = MaterialDialog(self.root, material)
+        updated_material = dialog.show()
+        
+        if updated_material:
+            # 显示处理中提示
+            self.show_processing_dialog("正在更新物料...")
+            
+            try:
+                success, message = self.material_controller.update_material(
+                    updated_material, material_data['version']
+                )
+                self.hide_processing_dialog()
+                
+                if success:
+                    messagebox.showinfo("成功", message)
+                    self.update_status("物料更新成功")
                     self.refresh_materials()
-                except Exception as e:
-                    messagebox.showerror("错误", f"更新失败: {str(e)}")
+                else:
+                    # 如果是并发冲突，提供刷新选项
+                    if "已被其他用户修改" in message:
+                        self.update_status("检测到数据冲突")
+                        if messagebox.askyesno("数据冲突", f"{message}\n\n是否刷新数据后重试？"):
+                            self.refresh_materials()
+                            self.edit_material()  # 递归重试
+                    else:
+                        messagebox.showerror("错误", message)
+            except Exception as e:
+                self.hide_processing_dialog()
+                messagebox.showerror("错误", f"更新失败: {str(e)}")
     
     def delete_material(self):
         """删除物料"""
@@ -717,14 +781,41 @@ class MainWindow:
             messagebox.showwarning("警告", "请选择要完成的订单")
             return
         
-        if messagebox.askyesno("确认", "确定要完成选中的订单吗？这将更新库存。"):
-            item = self.order_tree.item(selection[0])
-            order_id = item['values'][0]
+        item = self.order_tree.item(selection[0])
+        order_id = item['values'][0]
+        order_number = item['values'][1]
+        
+        # 显示详细确认对话框
+        if messagebox.askyesno("确认完成订单", 
+                              f"确定要完成订单 {order_number} 吗？\n\n"
+                              f"此操作将：\n"
+                              f"• 更新订单状态为已完成\n"
+                              f"• 减少相关物料的库存\n"
+                              f"• 记录库存变动历史\n\n"
+                              f"此操作不可撤销！"):
+            
+            # 显示处理中提示
+            self.show_processing_dialog("正在完成订单...")
+            
             try:
-                self.order_controller.complete_order(order_id)
-                messagebox.showinfo("成功", "订单已完成")
-                self.refresh_orders()
+                success, message = self.order_controller.complete_order(order_id)
+                self.hide_processing_dialog()
+                
+                if success:
+                    messagebox.showinfo("成功", message)
+                    self.update_status("订单完成成功，库存已更新")
+                    self.refresh_orders()
+                    self.refresh_materials()  # 同时刷新物料列表
+                else:
+                    # 如果是库存不足，提供详细错误信息
+                    if "库存不足" in message:
+                        self.update_status("订单完成失败：库存不足")
+                        messagebox.showerror("库存不足", message + "\n\n请检查库存后重试。")
+                    else:
+                        self.update_status("订单完成失败")
+                        messagebox.showerror("完成失败", message)
             except Exception as e:
+                self.hide_processing_dialog()
                 messagebox.showerror("错误", f"完成失败: {str(e)}")
     
     def cancel_order(self):
@@ -862,17 +953,57 @@ class MainWindow:
                 order.department, order.status, order.priority, created_at
             ))
     
+    def show_processing_dialog(self, message: str):
+        """显示处理中对话框"""
+        self.processing_dialog = tk.Toplevel(self.root)
+        self.processing_dialog.title("处理中")
+        self.processing_dialog.geometry("300x100")
+        self.processing_dialog.transient(self.root)
+        self.processing_dialog.grab_set()
+        
+        # 居中显示
+        self.processing_dialog.geometry("+%d+%d" % (
+            self.root.winfo_rootx() + 50,
+            self.root.winfo_rooty() + 50
+        ))
+        
+        # 禁用关闭按钮
+        self.processing_dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+        
+        frame = ttk.Frame(self.processing_dialog)
+        frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        ttk.Label(frame, text=message, font=("Arial", 10)).pack(pady=10)
+        
+        # 进度条
+        self.progress = ttk.Progressbar(frame, mode='indeterminate')
+        self.progress.pack(fill=tk.X, pady=5)
+        self.progress.start()
+        
+        # 强制更新界面
+        self.processing_dialog.update()
+    
+    def hide_processing_dialog(self):
+        """隐藏处理中对话框"""
+        if hasattr(self, 'processing_dialog') and self.processing_dialog:
+            self.progress.stop()
+            self.processing_dialog.destroy()
+            self.processing_dialog = None
+    
     def show_about(self):
         """显示关于对话框"""
         messagebox.showinfo("关于", 
-            "生物实验室库存管理系统 v1.0\n\n"
+            "生物实验室库存管理系统 v1.1\n\n"
             "功能特点:\n"
             "• 物料管理（增删改查）\n"
             "• 订单管理（创建、修改、完成）\n"
             "• HTML报告生成\n"
             "• 富文本描述支持\n"
-            "• 库存变动记录\n\n"
-            "使用SQLite数据库存储数据"
+            "• 库存变动记录\n"
+            "• 多用户并发支持\n"
+            "• 乐观锁防冲突\n\n"
+            "使用SQLite数据库存储数据\n"
+            "支持多用户同时访问"
         )
     
     def run(self):

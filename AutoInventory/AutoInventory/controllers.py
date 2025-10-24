@@ -47,35 +47,60 @@ class MaterialController:
         results = self.db.execute_query(query)
         return [Material.from_dict(row) for row in results]
     
-    def update_material(self, material: Material) -> bool:
-        """更新物料信息"""
+    def update_material(self, material: Material, expected_version: str = None) -> tuple[bool, str]:
+        """更新物料信息，返回(成功状态, 错误信息)"""
         if not material.id:
-            return False
+            return False, "物料ID不能为空"
         
-        # 获取当前库存
-        current = self.get_material(material.id)
-        if not current:
-            return False
+        # 获取当前库存和版本信息
+        current_data = self.db.get_material_with_version(material.id)
+        if not current_data:
+            return False, "物料不存在"
         
-        query = '''
-            UPDATE materials 
-            SET name=?, category=?, description=?, quantity=?, unit=?, 
-                min_stock=?, location=?, supplier=?, updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
-        '''
-        affected = self.db.execute_update(query, (
-            material.name, material.category, material.description,
-            material.quantity, material.unit, material.min_stock,
-            material.location, material.supplier, material.id
-        ))
+        # 如果提供了期望版本，使用乐观锁
+        if expected_version and current_data['version'] != expected_version:
+            return False, "数据已被其他用户修改，请刷新后重试"
+        
+        # 准备更新数据
+        update_data = {
+            'name': material.name,
+            'category': material.category,
+            'description': material.description,
+            'quantity': material.quantity,
+            'unit': material.unit,
+            'min_stock': material.min_stock,
+            'location': material.location,
+            'supplier': material.supplier
+        }
+        
+        # 使用乐观锁更新
+        if expected_version:
+            success = self.db.update_material_with_version(material.id, update_data, expected_version)
+            if not success:
+                return False, "数据已被其他用户修改，请刷新后重试"
+        else:
+            # 传统更新方式（向后兼容）
+            query = '''
+                UPDATE materials 
+                SET name=?, category=?, description=?, quantity=?, unit=?, 
+                    min_stock=?, location=?, supplier=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+            '''
+            affected = self.db.execute_update(query, (
+                material.name, material.category, material.description,
+                material.quantity, material.unit, material.min_stock,
+                material.location, material.supplier, material.id
+            ))
+            if affected == 0:
+                return False, "更新失败，物料可能已被删除"
         
         # 记录库存变动
-        quantity_diff = material.quantity - current.quantity
+        quantity_diff = material.quantity - current_data['quantity']
         if quantity_diff != 0:
             movement_type = MovementType.IN.value if quantity_diff > 0 else MovementType.OUT.value
             self._record_stock_movement(material.id, movement_type, abs(quantity_diff), "库存调整")
         
-        return affected > 0
+        return True, "更新成功"
     
     def delete_material(self, material_id: int) -> bool:
         """删除物料"""
@@ -175,20 +200,63 @@ class OrderController:
         
         return affected > 0
     
-    def complete_order(self, order_id: int) -> bool:
-        """完成订单"""
-        query = '''
-            UPDATE orders 
-            SET status=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
-        '''
-        affected = self.db.execute_update(query, (OrderStatus.COMPLETED.value, order_id))
+    def complete_order(self, order_id: int) -> tuple[bool, str]:
+        """完成订单，返回(成功状态, 错误信息)"""
+        # 首先检查订单状态
+        order = self.get_order(order_id)
+        if not order:
+            return False, "订单不存在"
         
-        if affected > 0:
-            # 更新库存
-            self._process_order_completion(order_id)
+        if order.status == OrderStatus.COMPLETED.value:
+            return False, "订单已完成"
         
-        return affected > 0
+        if order.status == OrderStatus.CANCELLED.value:
+            return False, "订单已取消，无法完成"
+        
+        # 检查库存是否充足
+        materials = self.get_order_materials(order_id)
+        for material_data in materials:
+            material_id = material_data['material_id']
+            required_quantity = material_data['quantity']
+            
+            material = self.get_material(material_id)
+            if not material:
+                return False, f"物料ID {material_id} 不存在"
+            
+            if material.quantity < required_quantity:
+                return False, f"物料 '{material.name}' 库存不足，需要 {required_quantity}，当前库存 {material.quantity}"
+        
+        # 使用事务完成订单和更新库存
+        operations = []
+        
+        # 更新订单状态
+        operations.append((
+            "UPDATE orders SET status=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (OrderStatus.COMPLETED.value, order_id)
+        ))
+        
+        # 更新库存和记录变动
+        for material_data in materials:
+            material_id = material_data['material_id']
+            quantity = material_data['quantity']
+            
+            # 减少库存
+            operations.append((
+                "UPDATE materials SET quantity = quantity - ? WHERE id = ?",
+                (quantity, material_id)
+            ))
+            
+            # 记录库存变动
+            operations.append((
+                "INSERT INTO stock_movements (material_id, movement_type, quantity, reference_id, notes) VALUES (?, ?, ?, ?, ?)",
+                (material_id, MovementType.OUT.value, quantity, order_id, "订单完成")
+            ))
+        
+        try:
+            self.db.execute_transaction(operations)
+            return True, "订单完成成功"
+        except Exception as e:
+            return False, f"完成订单失败: {str(e)}"
     
     def cancel_order(self, order_id: int) -> bool:
         """取消订单"""
@@ -242,26 +310,6 @@ class OrderController:
         unique_id = str(uuid.uuid4())[:8]
         return f"ORD-{timestamp}-{unique_id}"
     
-    def _process_order_completion(self, order_id: int):
-        """处理订单完成时的库存更新"""
-        materials = self.get_order_materials(order_id)
-        for material_data in materials:
-            # 减少库存
-            material_id = material_data['material_id']
-            quantity = material_data['quantity']
-            
-            # 更新物料库存
-            query = "UPDATE materials SET quantity = quantity - ? WHERE id = ?"
-            self.db.execute_update(query, (quantity, material_id))
-            
-            # 记录库存变动
-            query = '''
-                INSERT INTO stock_movements (material_id, movement_type, quantity, reference_id, notes)
-                VALUES (?, ?, ?, ?, ?)
-            '''
-            self.db.execute_insert(query, (
-                material_id, MovementType.OUT.value, quantity, order_id, "订单完成"
-            ))
 
 class ReportController:
     """报告控制器"""
