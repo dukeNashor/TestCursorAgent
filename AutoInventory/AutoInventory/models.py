@@ -41,6 +41,11 @@ class Material:
     supplier: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    images: List[str] = None  # 图片路径列表
+    
+    def __post_init__(self):
+        if self.images is None:
+            self.images = []
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -60,7 +65,18 @@ class Material:
             data['created_at'] = datetime.fromisoformat(data['created_at'])
         if data.get('updated_at'):
             data['updated_at'] = datetime.fromisoformat(data['updated_at'])
-        return cls(**data)
+        
+        # 只保留Material类定义的字段，过滤掉其他字段（如version）
+        material_fields = {
+            'id', 'name', 'category', 'description', 'quantity', 
+            'unit', 'min_stock', 'location', 'supplier', 
+            'created_at', 'updated_at', 'images'
+        }
+        filtered_data = {k: v for k, v in data.items() if k in material_fields}
+        # 确保images字段存在
+        if 'images' not in filtered_data:
+            filtered_data['images'] = []
+        return cls(**filtered_data)
 
 @dataclass
 class Order:
@@ -97,7 +113,15 @@ class Order:
         for field in ['created_at', 'updated_at', 'completed_at']:
             if data.get(field):
                 data[field] = datetime.fromisoformat(data[field])
-        return cls(**data)
+        
+        # 只保留Order类定义的字段，过滤掉其他字段
+        order_fields = {
+            'id', 'order_number', 'requester', 'department', 'status',
+            'priority', 'notes', 'created_at', 'updated_at', 'completed_at',
+            'materials'
+        }
+        filtered_data = {k: v for k, v in data.items() if k in order_fields}
+        return cls(**filtered_data)
 
 @dataclass
 class OrderMaterial:

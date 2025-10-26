@@ -6,14 +6,34 @@ import sqlite3
 import os
 import time
 import threading
+import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+
+def load_config() -> Dict[str, Any]:
+    """加载配置文件"""
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        # 如果配置文件不存在，返回默认配置
+        return {"database_path": "inventory.db"}
+    except json.JSONDecodeError:
+        # 如果配置文件格式错误，返回默认配置
+        return {"database_path": "inventory.db"}
 
 class DatabaseManager:
     """数据库管理器，负责数据库连接和表管理"""
     
-    def __init__(self, db_path: str = "inventory.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        # 如果未指定路径，从配置文件读取
+        if db_path is None:
+            config = load_config()
+            self.db_path = config.get("database_path", "inventory.db")
+        else:
+            self.db_path = db_path
+        
         self._lock = threading.Lock()  # 线程锁
         self.max_retries = 3  # 最大重试次数
         self.retry_delay = 0.1  # 重试延迟（秒）
@@ -40,6 +60,9 @@ class DatabaseManager:
         """初始化数据库表结构"""
         conn = self.get_connection()
         cursor = conn.cursor()
+        
+        # 检查并迁移 material_images 表结构
+        self._migrate_material_images_table(cursor)
         
         # 创建物料表
         cursor.execute('''
@@ -101,8 +124,57 @@ class DatabaseManager:
             )
         ''')
         
+        # material_images 表已在 _migrate_material_images_table 中创建
+        
         conn.commit()
         conn.close()
+    
+    def _migrate_material_images_table(self, cursor):
+        """迁移 material_images 表结构"""
+        try:
+            # 检查表是否存在
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='material_images'")
+            table_exists = cursor.fetchone()
+            
+            if table_exists:
+                # 检查是否有 image_path 列（旧结构）
+                cursor.execute("PRAGMA table_info(material_images)")
+                columns = [row[1] for row in cursor.fetchall()]
+                
+                if 'image_path' in columns and 'image_data' not in columns:
+                    # 需要迁移：删除旧表并创建新表
+                    print("检测到旧版本表结构，正在迁移...")
+                    cursor.execute("DROP TABLE IF EXISTS material_images")
+                    
+            # 创建新表结构
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS material_images (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    material_id INTEGER NOT NULL,
+                    image_data BLOB NOT NULL,
+                    image_type TEXT,
+                    display_order INTEGER DEFAULT 0,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (material_id) REFERENCES materials (id) ON DELETE CASCADE
+                )
+            ''')
+        except Exception as e:
+            print(f"迁移表结构时出错: {e}")
+            # 如果迁移失败，尝试直接创建新表
+            cursor.execute("DROP TABLE IF EXISTS material_images")
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS material_images (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    material_id INTEGER NOT NULL,
+                    image_data BLOB NOT NULL,
+                    image_type TEXT,
+                    display_order INTEGER DEFAULT 0,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (material_id) REFERENCES materials (id) ON DELETE CASCADE
+                )
+            ''')
     
     def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
         """执行查询并返回结果"""
@@ -174,4 +246,34 @@ class DatabaseManager:
             data['location'], data['supplier'], material_id, expected_version
         )
         affected = self.execute_update(query, params)
+        return affected > 0
+    
+    def add_material_image(self, material_id: int, image_data: bytes, image_type: str, display_order: int = 0, notes: str = "") -> int:
+        """添加物料图片（存储二进制数据）"""
+        query = '''
+            INSERT INTO material_images (material_id, image_data, image_type, display_order, notes)
+            VALUES (?, ?, ?, ?, ?)
+        '''
+        return self.execute_insert(query, (material_id, image_data, image_type, display_order, notes))
+    
+    def get_material_images(self, material_id: int) -> List[Dict[str, Any]]:
+        """获取物料的图片列表（返回二进制数据）"""
+        query = '''
+            SELECT id, material_id, image_data, image_type, display_order, notes, created_at
+            FROM material_images 
+            WHERE material_id = ? 
+            ORDER BY display_order, created_at
+        '''
+        return self.execute_query(query, (material_id,))
+    
+    def delete_material_image(self, image_id: int) -> bool:
+        """删除物料图片"""
+        query = "DELETE FROM material_images WHERE id = ?"
+        affected = self.execute_update(query, (image_id,))
+        return affected > 0
+    
+    def delete_material_images(self, material_id: int) -> bool:
+        """删除物料的所有图片"""
+        query = "DELETE FROM material_images WHERE material_id = ?"
+        affected = self.execute_update(query, (material_id,))
         return affected > 0

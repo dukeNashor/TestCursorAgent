@@ -7,10 +7,13 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import List, Optional, Dict, Any
 import webbrowser
 import os
+import io
 from datetime import datetime
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 
 from models import Material, Order, OrderStatus, Priority
 from controllers import MaterialController, OrderController, ReportController
+from database import load_config
 
 class EmojiPicker:
     """Emoji选择器"""
@@ -61,18 +64,28 @@ class EmojiPicker:
 class MaterialDialog:
     """物料编辑对话框"""
     
-    def __init__(self, parent, material: Optional[Material] = None):
+    def __init__(self, parent, material: Optional[Material] = None, material_controller=None):
         self.parent = parent
         self.material = material
+        self.material_controller = material_controller
         self.result = None
+        self.image_paths = []  # 存储图片路径
+        
+        # 如果有现有物料且有图片，初始化图片列表
+        # 由于图片现在存储在数据库中，编辑时需要临时保存为文件路径以便在界面上显示
+        if material and material.images:
+            # 图片现在是二进制数据，我们需要为编辑对话框创建临时文件
+            self.image_paths = []  # 编辑模式下先清空，用户需要重新添加图片
         
     def show(self):
         """显示对话框"""
         dialog = tk.Toplevel(self.parent)
         dialog.title("编辑物料" if self.material else "添加物料")
-        dialog.geometry("500x600")
+        dialog.geometry("600x700")
         dialog.transient(self.parent)
         dialog.grab_set()
+        
+        # 图片列表已经在__init__中初始化
         
         # 创建表单
         main_frame = ttk.Frame(dialog)
@@ -135,9 +148,30 @@ class MaterialDialog:
         if self.material and self.material.description:
             self.desc_text.insert(tk.END, self.material.description)
         
+        # 图片管理区域
+        ttk.Label(main_frame, text="图片:").grid(row=8, column=0, sticky=tk.NW, pady=5)
+        
+        images_frame = ttk.Frame(main_frame)
+        images_frame.grid(row=8, column=1, pady=5, sticky=tk.W)
+        
+        # 图片列表
+        self.images_listbox = tk.Listbox(images_frame, width=40, height=5)
+        self.images_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # 更新图片列表显示
+        self._update_images_listbox()
+        
+        # 图片操作按钮
+        image_btn_frame = ttk.Frame(images_frame)
+        image_btn_frame.pack(side=tk.RIGHT, padx=(5, 0))
+        
+        ttk.Button(image_btn_frame, text="添加", command=self._add_image).pack(pady=2)
+        ttk.Button(image_btn_frame, text="删除", command=self._remove_image).pack(pady=2)
+        ttk.Button(image_btn_frame, text="查看", command=self._view_image).pack(pady=2)
+        
         # 按钮区域
         button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=8, column=0, columnspan=2, pady=20)
+        button_frame.grid(row=9, column=0, columnspan=2, pady=20)
         
         ttk.Button(button_frame, text="保存", command=lambda: self._save(dialog)).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="取消", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
@@ -152,6 +186,79 @@ class MaterialDialog:
         emoji = emoji_picker.show()
         if emoji:
             self.desc_text.insert(tk.INSERT, emoji)
+    
+    def _update_images_listbox(self):
+        """更新图片列表显示"""
+        self.images_listbox.delete(0, tk.END)
+        for path in self.image_paths:
+            filename = os.path.basename(path)
+            self.images_listbox.insert(tk.END, filename)
+    
+    def _add_image(self):
+        """添加图片"""
+        filename = filedialog.askopenfilename(
+            title="选择图片",
+            filetypes=[
+                ("图片文件", "*.jpg *.jpeg *.png *.gif *.bmp"),
+                ("所有文件", "*.*")
+            ]
+        )
+        if filename:
+            self.image_paths.append(filename)
+            self._update_images_listbox()
+    
+    def _remove_image(self):
+        """删除选中的图片"""
+        selection = self.images_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("警告", "请选择要删除的图片")
+            return
+        
+        if messagebox.askyesno("确认", "确定要删除选中的图片吗？"):
+            index = selection[0]
+            del self.image_paths[index]
+            self._update_images_listbox()
+    
+    def _view_image(self):
+        """查看选中的图片"""
+        selection = self.images_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("警告", "请选择要查看的图片")
+            return
+        
+        index = selection[0]
+        image_path = self.image_paths[index]
+        
+        # 创建图片查看窗口
+        view_window = tk.Toplevel(self.parent)
+        view_window.title("查看图片")
+        view_window.geometry("800x600")
+        
+        try:
+            from PIL import Image, ImageTk
+            # 加载图片
+            if os.path.exists(image_path):
+                img = Image.open(image_path)
+            else:
+                messagebox.showerror("错误", "图片文件不存在")
+                view_window.destroy()
+                return
+            # 缩放图片以适应窗口
+            img.thumbnail((700, 500), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            
+            # 显示图片
+            label = tk.Label(view_window, image=photo)
+            label.image = photo  # 保持引用
+            label.pack(padx=10, pady=10)
+            
+            # 显示图片路径
+            path_label = tk.Label(view_window, text=image_path, wraplength=700)
+            path_label.pack(pady=5)
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"无法显示图片: {str(e)}")
+            view_window.destroy()
     
     def _save(self, dialog):
         """保存物料"""
@@ -177,6 +284,14 @@ class MaterialDialog:
                 messagebox.showerror("错误", "数量和最低库存必须是数字")
                 return
             
+            # 读取图片文件为二进制数据
+            image_data_list = []
+            for image_path in self.image_paths:
+                if os.path.exists(image_path):
+                    with open(image_path, 'rb') as f:
+                        image_bytes = f.read()
+                    image_data_list.append(image_bytes)
+            
             # 创建物料对象
             material = Material(
                 id=self.material.id if self.material else None,
@@ -187,7 +302,8 @@ class MaterialDialog:
                 unit=self.unit_var.get().strip(),
                 min_stock=min_stock,
                 location=self.location_var.get().strip(),
-                supplier=self.supplier_var.get().strip()
+                supplier=self.supplier_var.get().strip(),
+                images=image_data_list
             )
             
             self.result = material
@@ -467,7 +583,7 @@ class MainWindow:
         from database import DatabaseManager
         self.db_manager = DatabaseManager()
         self.material_controller = MaterialController(self.db_manager)
-        self.order_controller = OrderController(self.db_manager)
+        self.order_controller = OrderController(self.db_manager, self.material_controller)
         self.report_controller = ReportController(self.db_manager)
         
         self.setup_ui()
@@ -537,20 +653,68 @@ class MainWindow:
         search_entry.pack(side=tk.LEFT, padx=(0, 5))
         search_entry.bind('<KeyRelease>', self.search_materials)
         
-        # 物料表格
-        columns = ("ID", "名称", "类别", "数量", "单位", "最低库存", "位置", "供应商")
-        self.material_tree = ttk.Treeview(self.material_frame, columns=columns, show="headings", height=20)
+        # 创建水平分割框架
+        paned_window = ttk.PanedWindow(self.material_frame, orient=tk.HORIZONTAL)
+        paned_window.pack(fill=tk.BOTH, expand=True)
         
-        for col in columns:
-            self.material_tree.heading(col, text=col)
-            self.material_tree.column(col, width=120)
+        # 左侧物料列表区域
+        list_frame = ttk.Frame(paned_window)
+        paned_window.add(list_frame, weight=2)
         
-        # 滚动条
-        material_scrollbar = ttk.Scrollbar(self.material_frame, orient=tk.VERTICAL, command=self.material_tree.yview)
-        self.material_tree.configure(yscrollcommand=material_scrollbar.set)
+        # 物料显示区域 - 使用Canvas实现卡片式布局
+        canvas_frame = ttk.Frame(list_frame)
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
         
-        self.material_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 创建Canvas和滚动条
+        self.material_canvas = tk.Canvas(canvas_frame, bg="#f5f5f5")
+        material_scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=self.material_canvas.yview)
+        self.material_scrollable_frame = ttk.Frame(self.material_canvas)
+        
+        self.material_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.material_canvas.configure(scrollregion=self.material_canvas.bbox("all"))
+        )
+        
+        self.material_canvas.create_window((0, 0), window=self.material_scrollable_frame, anchor="nw")
+        self.material_canvas.configure(yscrollcommand=material_scrollbar.set)
+        
+        self.material_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         material_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 绑定鼠标滚轮
+        self.material_canvas.bind_all("<MouseWheel>", self._on_material_canvas_scroll)
+        
+        # 存储物料卡片引用
+        self.material_cards = []
+        self.selected_material_id = None  # 当前选中的物料ID
+        
+        # 右侧详情面板
+        detail_frame = ttk.Frame(paned_window)
+        paned_window.add(detail_frame, weight=1)
+        self.setup_material_detail_panel(detail_frame)
+    
+    def setup_material_detail_panel(self, parent):
+        """设置物料详情面板"""
+        # 标题
+        title_label = tk.Label(parent, text="物料详情", font=("Microsoft YaHei", 14, "bold"), bg="white")
+        title_label.pack(pady=10)
+        
+        # 详情内容框架
+        self.detail_content = tk.Frame(parent, bg="white")
+        self.detail_content.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # 存储不同物料的详情面板
+        self.detail_panels = {}  # material_id -> panel widget
+        
+        # 初始显示提示
+        self.detail_placeholder = tk.Label(
+            self.detail_content,
+            text="请点击左侧物料卡片查看详情",
+            font=("Arial", 12),
+            bg="white",
+            fg="#6c757d"
+        )
+        self.detail_placeholder.pack(expand=True)
     
     def setup_order_tab(self):
         """设置订单管理标签页"""
@@ -639,6 +803,18 @@ class MainWindow:
         status_label = ttk.Label(self.status_frame, textvariable=self.status_var, relief=tk.SUNKEN)
         status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
+        # 配置文件路径显示
+        config = load_config()
+        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        config_display = f"📄 配置: {os.path.basename(config_path)} | "
+        if config.get("database_path"):
+            config_display += f"数据库: {config['database_path']}"
+        else:
+            config_display += "数据库: inventory.db"
+        
+        self.config_label = ttk.Label(self.status_frame, text=config_display, relief=tk.SUNKEN, font=("Arial", 8))
+        self.config_label.pack(side=tk.RIGHT, padx=(5, 0))
+        
         # 连接状态指示器
         self.connection_status = ttk.Label(self.status_frame, text="🟢 数据库连接正常", relief=tk.SUNKEN)
         self.connection_status.pack(side=tk.RIGHT, padx=(5, 0))
@@ -666,11 +842,21 @@ class MainWindow:
     
     def add_material(self):
         """添加物料"""
-        dialog = MaterialDialog(self.root)
+        dialog = MaterialDialog(self.root, material_controller=self.material_controller)
         material = dialog.show()
         if material:
             try:
-                self.material_controller.create_material(material)
+                # 读取图片文件为二进制数据
+                if material.images:
+                    image_data_list = []
+                    for image_path in material.images:
+                        if os.path.exists(image_path):
+                            with open(image_path, 'rb') as f:
+                                image_bytes = f.read()
+                            image_data_list.append(image_bytes)
+                    material.images = image_data_list
+                
+                material_id = self.material_controller.create_material(material)
                 messagebox.showinfo("成功", "物料添加成功")
                 self.refresh_materials()
             except Exception as e:
@@ -678,14 +864,10 @@ class MainWindow:
     
     def edit_material(self):
         """编辑物料"""
-        selection = self.material_tree.selection()
-        if not selection:
-            messagebox.showwarning("警告", "请选择要编辑的物料")
-            return
-        
-        item = self.material_tree.item(selection[0])
-        material_id = item['values'][0]
-        
+        messagebox.showinfo("提示", "请双击物料卡片进行编辑")
+    
+    def _edit_material_by_id(self, material_id: int):
+        """根据ID编辑物料"""
         # 获取物料信息，包含版本号
         material_data = self.material_controller.db.get_material_with_version(material_id)
         if not material_data:
@@ -693,7 +875,11 @@ class MainWindow:
             return
         
         material = Material.from_dict(material_data)
-        dialog = MaterialDialog(self.root, material)
+        # 加载图片列表（从数据库获取二进制数据）
+        images = self.material_controller.db.get_material_images(material_id)
+        material.images = [img['image_data'] for img in images]  # 使用 image_data 而不是 image_path
+        
+        dialog = MaterialDialog(self.root, material, self.material_controller)
         updated_material = dialog.show()
         
         if updated_material:
@@ -701,6 +887,21 @@ class MainWindow:
             self.show_processing_dialog("正在更新物料...")
             
             try:
+                # 读取新添加的图片文件为二进制数据
+                if updated_material.images:
+                    image_data_list = []
+                    for image_data in updated_material.images:
+                        if isinstance(image_data, str):
+                            # 文件路径，读取文件
+                            if os.path.exists(image_data):
+                                with open(image_data, 'rb') as f:
+                                    image_bytes = f.read()
+                                image_data_list.append(image_bytes)
+                        else:
+                            # 已经是二进制数据，直接使用
+                            image_data_list.append(image_data)
+                    updated_material.images = image_data_list
+                
                 success, message = self.material_controller.update_material(
                     updated_material, material_data['version']
                 )
@@ -725,18 +926,49 @@ class MainWindow:
     
     def delete_material(self):
         """删除物料"""
-        selection = self.material_tree.selection()
-        if not selection:
-            messagebox.showwarning("警告", "请选择要删除的物料")
+        if not self.selected_material_id:
+            messagebox.showwarning("警告", "请先选择一个物料")
             return
         
         if messagebox.askyesno("确认", "确定要删除选中的物料吗？"):
-            item = self.material_tree.item(selection[0])
-            material_id = item['values'][0]
+            try:
+                self.material_controller.delete_material(self.selected_material_id)
+                messagebox.showinfo("成功", "物料删除成功")
+                self.selected_material_id = None
+                self.refresh_materials()
+                # 清空详情面板
+                for widget in self.detail_content.winfo_children():
+                    widget.destroy()
+                self.detail_placeholder = tk.Label(
+                    self.detail_content,
+                    text="请点击左侧物料卡片查看详情",
+                    font=("Arial", 12),
+                    bg="white",
+                    fg="#6c757d"
+                )
+                self.detail_placeholder.pack(expand=True)
+            except Exception as e:
+                messagebox.showerror("错误", f"删除失败: {str(e)}")
+    
+    def _delete_material_by_id(self, material_id: int):
+        """根据ID删除物料"""
+        if messagebox.askyesno("确认", "确定要删除这个物料吗？"):
             try:
                 self.material_controller.delete_material(material_id)
                 messagebox.showinfo("成功", "物料删除成功")
+                self.selected_material_id = None
                 self.refresh_materials()
+                # 清空详情面板
+                for widget in self.detail_content.winfo_children():
+                    widget.destroy()
+                self.detail_placeholder = tk.Label(
+                    self.detail_content,
+                    text="请点击左侧物料卡片查看详情",
+                    font=("Arial", 12),
+                    bg="white",
+                    fg="#6c757d"
+                )
+                self.detail_placeholder.pack(expand=True)
             except Exception as e:
                 messagebox.showerror("错误", f"删除失败: {str(e)}")
     
@@ -911,19 +1143,384 @@ class MainWindow:
         orders = self.order_controller.get_all_orders()
         self.update_report_order_tree(orders)
     
+    def _on_material_canvas_scroll(self, event):
+        """处理Canvas滚动"""
+        self.material_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    
     def update_material_tree(self, materials):
-        """更新物料树形控件"""
-        # 清空现有数据
-        for item in self.material_tree.get_children():
-            self.material_tree.delete(item)
+        """更新物料树形控件 - 使用卡片式布局"""
+        # 清空现有卡片
+        for card in self.material_cards:
+            card.destroy()
+        self.material_cards = []
         
-        # 添加新数据
+        # 清空详情面板缓存
+        self.detail_panels.clear()
+        
+        # 重置选中状态
+        self.selected_material_id = None
+        
+        # 显示placeholder
+        if hasattr(self, 'detail_placeholder'):
+            self.detail_placeholder.pack(expand=True)
+        
+        # 为每个物料创建卡片
         for material in materials:
-            self.material_tree.insert("", tk.END, values=(
-                material.id, material.name, material.category,
-                material.quantity, material.unit, material.min_stock,
-                material.location, material.supplier
-            ))
+            card = self._create_material_card(material)
+            self.material_cards.append(card)
+    
+    def _create_material_card(self, material: Material) -> tk.Frame:
+        """创建物料卡片"""
+        # 主卡片框架
+        card = tk.Frame(self.material_scrollable_frame, bg="white", relief=tk.RAISED, bd=2)
+        card.pack(fill=tk.X, padx=10, pady=8)
+        
+        # 左侧图片区域
+        image_frame = tk.Frame(card, bg="white", width=150)
+        image_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+        
+        # 加载并显示图片（从二进制数据）
+        if material.images and len(material.images) > 0:
+            try:
+                # 获取第一张图片的二进制数据
+                img_bytes = material.images[0]
+                if isinstance(img_bytes, bytes):
+                    # 将二进制数据转换为PIL Image
+                    img = Image.open(io.BytesIO(img_bytes))
+                    img.thumbnail((120, 120), Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(img)
+                    
+                    img_label = tk.Label(image_frame, image=photo, bg="white")
+                    img_label.image = photo  # 保持引用
+                    img_label.pack(pady=5)
+                    
+                    # 如果有多张图片，显示数量标签
+                    if len(material.images) > 1:
+                        count_label = tk.Label(
+                            image_frame, 
+                            text=f"+{len(material.images)-1}", 
+                            bg="#007bff", 
+                            fg="white",
+                            font=("Arial", 10, "bold")
+                        )
+                        count_label.pack(pady=2)
+                else:
+                    # 如果还是字符串路径（兼容旧数据）
+                    if os.path.exists(img_bytes):
+                        img = Image.open(img_bytes)
+                        img.thumbnail((120, 120), Image.Resampling.LANCZOS)
+                        photo = ImageTk.PhotoImage(img)
+                        
+                        img_label = tk.Label(image_frame, image=photo, bg="white")
+                        img_label.image = photo
+                        img_label.pack(pady=5)
+                    else:
+                        raise Exception("图片数据格式错误")
+            except Exception as e:
+                # 图片加载失败，显示占位符
+                placeholder = tk.Label(
+                    image_frame, 
+                    text="📷\n加载失败", 
+                    bg="#e9ecef", 
+                    fg="#6c757d",
+                    font=("Arial", 12),
+                    width=15,
+                    height=8
+                )
+                placeholder.pack(pady=5)
+        else:
+            # 没有图片，显示占位符
+            placeholder = tk.Label(
+                image_frame, 
+                text="📷\n无图片", 
+                bg="#e9ecef", 
+                fg="#6c757d",
+                font=("Arial", 14),
+                width=15,
+                height=8
+            )
+            placeholder.pack(pady=5)
+        
+        # 右侧信息区域
+        info_frame = tk.Frame(card, bg="white")
+        info_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # 标题区域
+        title_frame = tk.Frame(info_frame, bg="white")
+        title_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        # 物料名称（大号粗体）
+        name_label = tk.Label(
+            title_frame, 
+            text=material.name, 
+            font=("Microsoft YaHei", 16, "bold"),
+            bg="white",
+            fg="#212529"
+        )
+        name_label.pack(side=tk.LEFT)
+        
+        # ID标签
+        id_label = tk.Label(
+            title_frame,
+            text=f"ID: {material.id}",
+            font=("Arial", 9),
+            bg="#e9ecef",
+            fg="#6c757d",
+            padx=8,
+            pady=2
+        )
+        id_label.pack(side=tk.RIGHT)
+        
+        # 类别标签
+        category_colors = {
+            "试剂": "#28a745",
+            "耗材": "#17a2b8",
+            "设备": "#ffc107",
+            "工具": "#fd7e14",
+            "其他": "#6c757d"
+        }
+        category_color = category_colors.get(material.category, "#6c757d")
+        category_label = tk.Label(
+            info_frame,
+            text=material.category,
+            font=("Arial", 10, "bold"),
+            bg=category_color,
+            fg="white",
+            padx=10,
+            pady=3
+        )
+        category_label.pack(anchor=tk.W, pady=5)
+        
+        # 信息网格
+        grid_frame = tk.Frame(info_frame, bg="white")
+        grid_frame.pack(fill=tk.X, pady=5)
+        
+        # 数量信息
+        quantity_frame = tk.Frame(grid_frame, bg="white")
+        quantity_frame.grid(row=0, column=0, sticky=tk.W, padx=(0, 20), pady=2)
+        
+        tk.Label(quantity_frame, text="数量:", font=("Arial", 9), bg="white", fg="#6c757d").pack(side=tk.LEFT)
+        quantity_value = tk.Label(
+            quantity_frame, 
+            text=f"{material.quantity} {material.unit}", 
+            font=("Arial", 10, "bold"),
+            bg="white",
+            fg="#212529"
+        )
+        quantity_value.pack(side=tk.LEFT, padx=5)
+        
+        # 最低库存
+        min_stock_frame = tk.Frame(grid_frame, bg="white")
+        min_stock_frame.grid(row=0, column=1, sticky=tk.W, padx=(0, 20), pady=2)
+        
+        tk.Label(min_stock_frame, text="最低库存:", font=("Arial", 9), bg="white", fg="#6c757d").pack(side=tk.LEFT)
+        min_stock_value = tk.Label(
+            min_stock_frame,
+            text=str(material.min_stock),
+            font=("Arial", 10, "bold"),
+            bg="white",
+            fg="#dc3545" if material.quantity <= material.min_stock else "#212529"
+        )
+        min_stock_value.pack(side=tk.LEFT, padx=5)
+        
+        # 存放位置
+        if material.location:
+            location_frame = tk.Frame(grid_frame, bg="white")
+            location_frame.grid(row=1, column=0, sticky=tk.W, padx=(0, 20), pady=2)
+            
+            tk.Label(location_frame, text="📍", font=("Arial", 10), bg="white").pack(side=tk.LEFT)
+            tk.Label(location_frame, text=material.location, font=("Arial", 9), bg="white", fg="#6c757d").pack(side=tk.LEFT, padx=5)
+        
+        # 供应商
+        if material.supplier:
+            supplier_frame = tk.Frame(grid_frame, bg="white")
+            supplier_frame.grid(row=1, column=1, sticky=tk.W, padx=(0, 20), pady=2)
+            
+            tk.Label(supplier_frame, text="🏢", font=("Arial", 10), bg="white").pack(side=tk.LEFT)
+            tk.Label(supplier_frame, text=material.supplier, font=("Arial", 9), bg="white", fg="#6c757d").pack(side=tk.LEFT, padx=5)
+        
+        # 绑定点击事件用于选中和显示详情
+        def on_card_click(event):
+            self._select_material_card(material.id, card)
+        
+        def on_card_double_click(event):
+            self._edit_material_by_id(material.id)
+        
+        card.bind("<Button-1>", on_card_click)
+        card.bind("<Double-Button-1>", on_card_double_click)
+        for widget in card.winfo_children():
+            widget.bind("<Button-1>", on_card_click)
+            widget.bind("<Double-Button-1>", on_card_double_click)
+        
+        return card
+    
+    def _select_material_card(self, material_id: int, card_widget):
+        """选中物料卡片"""
+        # 取消之前选中的卡片
+        if self.selected_material_id:
+            for card in self.material_cards:
+                card.config(relief=tk.RAISED, bd=2, highlightbackground="white", highlightthickness=0)
+        
+        # 高亮当前选中的卡片（立即响应）
+        card_widget.config(relief=tk.SOLID, bd=3, highlightbackground="#28a745", highlightthickness=2)
+        self.selected_material_id = material_id
+        
+        # 直接显示详情（现在从缓存读取，速度很快）
+        self._show_material_detail(material_id)
+    
+    def _show_material_detail(self, material_id: int):
+        """显示物料详情"""
+        # 隐藏placeholder
+        if hasattr(self, 'detail_placeholder'):
+            self.detail_placeholder.pack_forget()
+        
+        # 如果已经有缓存的面板，直接显示
+        if material_id in self.detail_panels:
+            # 隐藏所有面板
+            for mid, panel in self.detail_panels.items():
+                panel.pack_forget()
+            # 显示当前面板
+            self.detail_panels[material_id].pack(fill=tk.BOTH, expand=True)
+            return
+        
+        # 从缓存获取物料信息（速度很快）
+        material = self.material_controller.get_material(material_id)
+        
+        if not material:
+            error_label = tk.Label(
+                self.detail_content,
+                text="物料不存在",
+                font=("Arial", 12),
+                bg="white",
+                fg="#dc3545"
+            )
+            error_label.pack(expand=True)
+            return
+        
+        # 创建新的详情面板并缓存
+        panel = self._create_detail_panel(material)
+        self.detail_panels[material_id] = panel
+        panel.pack(fill=tk.BOTH, expand=True)
+    
+    def _create_detail_panel(self, material: Material) -> tk.Frame:
+        """创建详情面板"""
+        panel = tk.Frame(self.detail_content, bg="white")
+        
+        # 创建滚动区域
+        canvas = tk.Canvas(panel, bg="white")
+        scrollbar = ttk.Scrollbar(panel, orient=tk.VERTICAL, command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg="white")
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 物料名称
+        name_label = tk.Label(
+            scrollable_frame,
+            text=material.name,
+            font=("Microsoft YaHei", 18, "bold"),
+            bg="white",
+            fg="#212529"
+        )
+        name_label.pack(pady=10)
+        
+        # 类别
+        category_colors = {
+            "试剂": "#28a745",
+            "耗材": "#17a2b8",
+            "设备": "#ffc107",
+            "工具": "#fd7e14",
+            "其他": "#6c757d"
+        }
+        category_color = category_colors.get(material.category, "#6c757d")
+        category_label = tk.Label(
+            scrollable_frame,
+            text=material.category,
+            font=("Arial", 12, "bold"),
+            bg=category_color,
+            fg="white",
+            padx=15,
+            pady=5
+        )
+        category_label.pack(pady=5)
+        
+        # 分隔线
+        separator = tk.Frame(scrollable_frame, height=2, bg="#dee2e6")
+        separator.pack(fill=tk.X, pady=15)
+        
+        # 详细信息
+        info_section = tk.LabelFrame(scrollable_frame, text="基本信息", font=("Arial", 10, "bold"), bg="white")
+        info_section.pack(fill=tk.X, padx=10, pady=5)
+        
+        # ID
+        tk.Label(info_section, text=f"ID: {material.id}", font=("Arial", 9), bg="white", fg="#6c757d").pack(anchor=tk.W, pady=3)
+        
+        # 数量
+        tk.Label(info_section, text=f"数量: {material.quantity} {material.unit}", font=("Arial", 10, "bold"), bg="white").pack(anchor=tk.W, pady=3)
+        
+        # 最低库存
+        min_stock_color = "#dc3545" if material.quantity <= material.min_stock else "#6c757d"
+        tk.Label(info_section, text=f"最低库存: {material.min_stock}", font=("Arial", 10), bg="white", fg=min_stock_color).pack(anchor=tk.W, pady=3)
+        
+        # 存放位置
+        if material.location:
+            tk.Label(info_section, text=f"📍 位置: {material.location}", font=("Arial", 9), bg="white", fg="#6c757d").pack(anchor=tk.W, pady=3)
+        
+        # 供应商
+        if material.supplier:
+            tk.Label(info_section, text=f"🏢 供应商: {material.supplier}", font=("Arial", 9), bg="white", fg="#6c757d").pack(anchor=tk.W, pady=3)
+        
+        # 描述
+        if material.description:
+            desc_section = tk.LabelFrame(scrollable_frame, text="描述", font=("Arial", 10, "bold"), bg="white")
+            desc_section.pack(fill=tk.X, padx=10, pady=5)
+            
+            desc_text = tk.Text(desc_section, height=6, wrap=tk.WORD, font=("Arial", 9), bg="#f8f9fa", fg="#212529")
+            desc_text.insert(tk.END, material.description)
+            desc_text.config(state=tk.DISABLED)
+            desc_text.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 图片（延迟加载以提高性能）
+        if material.images and len(material.images) > 0:
+            img_section = tk.LabelFrame(scrollable_frame, text="图片", font=("Arial", 10, "bold"), bg="white")
+            img_section.pack(fill=tk.X, padx=10, pady=5)
+            
+            # 限制显示的图片数量
+            max_images = 3
+            for idx, img_bytes in enumerate(material.images[:max_images]):
+                if isinstance(img_bytes, bytes):
+                    try:
+                        img = Image.open(io.BytesIO(img_bytes))
+                        img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+                        photo = ImageTk.PhotoImage(img)
+                        
+                        img_label = tk.Label(img_section, image=photo, bg="white")
+                        img_label.image = photo
+                        img_label.pack(pady=5)
+                    except Exception as e:
+                        pass
+            
+            # 如果还有更多图片，显示提示
+            if len(material.images) > max_images:
+                tk.Label(img_section, text=f"...还有 {len(material.images) - max_images} 张图片", 
+                        font=("Arial", 9), bg="white", fg="#6c757d").pack(pady=5)
+        
+        # 按钮区域
+        button_frame = tk.Frame(scrollable_frame, bg="white")
+        button_frame.pack(fill=tk.X, padx=10, pady=15)
+        
+        ttk.Button(button_frame, text="编辑物料", command=lambda: self._edit_material_by_id(material.id)).pack(fill=tk.X, pady=3)
+        ttk.Button(button_frame, text="删除物料", command=lambda: self._delete_material_by_id(material.id)).pack(fill=tk.X, pady=3)
+        
+        return panel
     
     def update_order_tree(self, orders):
         """更新订单树形控件"""

@@ -236,7 +236,7 @@ def main():
         # 初始化数据库
         db_manager = DatabaseManager()
         material_controller = MaterialController(db_manager)
-        order_controller = OrderController(db_manager)
+        order_controller = OrderController(db_manager, material_controller)
         
         # 检查是否已有数据
         existing_materials = material_controller.get_all_materials()

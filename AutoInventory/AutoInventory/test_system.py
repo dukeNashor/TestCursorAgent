@@ -61,11 +61,11 @@ def test_material_controller(db_manager):
     
     return material_controller, material_id
 
-def test_order_controller(db_manager, material_id):
+def test_order_controller(db_manager, material_id, material_controller):
     """测试订单控制器"""
     print("\n📋 测试订单管理功能...")
     
-    order_controller = OrderController(db_manager)
+    order_controller = OrderController(db_manager, material_controller)
     
     # 创建测试订单
     test_order = Order(
@@ -155,7 +155,7 @@ def main():
         material_controller, material_id = test_material_controller(db_manager)
         
         # 测试订单管理
-        order_controller, order_id = test_order_controller(db_manager, material_id)
+        order_controller, order_id = test_order_controller(db_manager, material_id, material_controller)
         
         # 测试报告生成
         test_report_controller(db_manager, order_id)

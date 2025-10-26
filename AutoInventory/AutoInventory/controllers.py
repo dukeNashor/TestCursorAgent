@@ -5,6 +5,10 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import uuid
+import os
+import base64
+from PIL import Image, ImageTk
+import io
 
 from database import DatabaseManager
 from models import Material, Order, OrderMaterial, StockMovement, OrderStatus, Priority, MovementType
@@ -14,9 +18,76 @@ class MaterialController:
     
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
+        self._material_cache = {}  # 内存缓存：material_id -> Material对象
+        self._all_materials_cache = []  # 所有物料的缓存列表
+        self._cache_initialized = False
+    
+    def _init_cache(self):
+        """初始化缓存"""
+        if not self._cache_initialized:
+            self._refresh_cache()
+            self._cache_initialized = True
+    
+    def _refresh_cache(self):
+        """刷新缓存"""
+        # 清空缓存
+        self._material_cache.clear()
+        self._all_materials_cache.clear()
+        
+        # 从数据库加载所有物料
+        query = "SELECT * FROM materials ORDER BY name"
+        results = self.db.execute_query(query)
+        
+        for row in results:
+            material = Material.from_dict(row)
+            # 加载图片列表
+            images = self.db.get_material_images(material.id)
+            material.images = [img['image_data'] for img in images]
+            
+            # 存入缓存
+            self._material_cache[material.id] = material
+            self._all_materials_cache.append(material)
     
     def create_material(self, material: Material) -> int:
         """创建新物料"""
+        query = '''
+            INSERT INTO materials (name, category, description, quantity, unit, min_stock, location, supplier)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        material_id = self.db.execute_insert(query, (
+            material.name, material.category, material.description,
+            material.quantity, material.unit, material.min_stock,
+            material.location, material.supplier
+        ))
+        
+        # 添加图片（存储二进制数据）
+        if material.images:
+            for idx, image_data in enumerate(material.images):
+                if isinstance(image_data, str):
+                    # 如果是文件路径，读取文件
+                    if os.path.exists(image_data):
+                        with open(image_data, 'rb') as f:
+                            image_bytes = f.read()
+                        image_type = os.path.splitext(image_data)[1][1:]  # 获取扩展名
+                    else:
+                        continue
+                else:
+                    # 如果是字节数据
+                    image_bytes = image_data['data'] if isinstance(image_data, dict) else image_data
+                    image_type = image_data.get('type', 'jpg') if isinstance(image_data, dict) else 'jpg'
+                self.db.add_material_image(material_id, image_bytes, image_type, idx)
+        
+        # 记录库存变动
+        if material.quantity > 0:
+            self._record_stock_movement(material_id, MovementType.IN.value, material.quantity, "初始库存")
+        
+        # 更新缓存
+        self._refresh_cache()
+        
+        return material_id
+    
+    def create_material_without_images(self, material: Material) -> int:
+        """创建新物料但不添加图片记录（用于后续处理）"""
         query = '''
             INSERT INTO materials (name, category, description, quantity, unit, min_stock, location, supplier)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -34,18 +105,14 @@ class MaterialController:
         return material_id
     
     def get_material(self, material_id: int) -> Optional[Material]:
-        """获取单个物料"""
-        query = "SELECT * FROM materials WHERE id = ?"
-        results = self.db.execute_query(query, (material_id,))
-        if results:
-            return Material.from_dict(results[0])
-        return None
+        """获取单个物料（从缓存）"""
+        self._init_cache()
+        return self._material_cache.get(material_id)
     
     def get_all_materials(self) -> List[Material]:
-        """获取所有物料"""
-        query = "SELECT * FROM materials ORDER BY name"
-        results = self.db.execute_query(query)
-        return [Material.from_dict(row) for row in results]
+        """获取所有物料（从缓存）"""
+        self._init_cache()
+        return self._all_materials_cache.copy()
     
     def update_material(self, material: Material, expected_version: str = None) -> tuple[bool, str]:
         """更新物料信息，返回(成功状态, 错误信息)"""
@@ -94,11 +161,34 @@ class MaterialController:
             if affected == 0:
                 return False, "更新失败，物料可能已被删除"
         
+        # 更新图片
+        # 先删除旧图片记录
+        self.db.delete_material_images(material.id)
+        # 添加新图片（存储二进制数据）
+        if material.images:
+            for idx, image_data in enumerate(material.images):
+                if isinstance(image_data, str):
+                    # 如果是文件路径，读取文件
+                    if os.path.exists(image_data):
+                        with open(image_data, 'rb') as f:
+                            image_bytes = f.read()
+                        image_type = os.path.splitext(image_data)[1][1:]
+                    else:
+                        continue
+                else:
+                    # 如果是字节数据
+                    image_bytes = image_data
+                    image_type = 'jpg'
+                self.db.add_material_image(material.id, image_bytes, image_type, idx)
+        
         # 记录库存变动
         quantity_diff = material.quantity - current_data['quantity']
         if quantity_diff != 0:
             movement_type = MovementType.IN.value if quantity_diff > 0 else MovementType.OUT.value
             self._record_stock_movement(material.id, movement_type, abs(quantity_diff), "库存调整")
+        
+        # 更新缓存
+        self._refresh_cache()
         
         return True, "更新成功"
     
@@ -106,18 +196,24 @@ class MaterialController:
         """删除物料"""
         query = "DELETE FROM materials WHERE id = ?"
         affected = self.db.execute_update(query, (material_id,))
+        
+        # 更新缓存
+        if affected > 0:
+            self._refresh_cache()
+        
         return affected > 0
     
     def search_materials(self, keyword: str) -> List[Material]:
-        """搜索物料"""
-        query = '''
-            SELECT * FROM materials 
-            WHERE name LIKE ? OR category LIKE ? OR description LIKE ?
-            ORDER BY name
-        '''
-        search_term = f"%{keyword}%"
-        results = self.db.execute_query(query, (search_term, search_term, search_term))
-        return [Material.from_dict(row) for row in results]
+        """搜索物料（从缓存）"""
+        self._init_cache()
+        keyword_lower = keyword.lower()
+        results = []
+        for material in self._all_materials_cache:
+            if (keyword_lower in material.name.lower() or 
+                keyword_lower in material.category.lower() or 
+                keyword_lower in (material.description or "").lower()):
+                results.append(material)
+        return results
     
     def get_low_stock_materials(self) -> List[Material]:
         """获取库存不足的物料"""
@@ -132,12 +228,21 @@ class MaterialController:
             VALUES (?, ?, ?, ?)
         '''
         self.db.execute_insert(query, (material_id, movement_type, quantity, notes))
+    
+    def image_bytes_to_base64(self, image_bytes: bytes) -> str:
+        """将图片字节数据转换为base64字符串用于显示"""
+        return base64.b64encode(image_bytes).decode('utf-8')
+    
+    def image_bytes_to_pil_image(self, image_bytes: bytes) -> Image.Image:
+        """将图片字节数据转换为PIL Image对象"""
+        return Image.open(io.BytesIO(image_bytes))
 
 class OrderController:
     """订单控制器"""
     
-    def __init__(self, db_manager: DatabaseManager):
+    def __init__(self, db_manager: DatabaseManager, material_controller: MaterialController = None):
         self.db = db_manager
+        self.material_controller = material_controller
     
     def create_order(self, order: Order) -> int:
         """创建新订单"""
@@ -219,10 +324,13 @@ class OrderController:
             material_id = material_data['material_id']
             required_quantity = material_data['quantity']
             
-            material = self.get_material(material_id)
-            if not material:
+            # 直接从数据库获取物料信息
+            material_query = "SELECT * FROM materials WHERE id = ?"
+            material_rows = self.db.execute_query(material_query, (material_id,))
+            if not material_rows:
                 return False, f"物料ID {material_id} 不存在"
             
+            material = Material.from_dict(material_rows[0])
             if material.quantity < required_quantity:
                 return False, f"物料 '{material.name}' 库存不足，需要 {required_quantity}，当前库存 {material.quantity}"
         
@@ -321,7 +429,7 @@ class ReportController:
         """生成订单HTML报告"""
         orders = []
         for order_id in order_ids:
-            order = OrderController(self.db).get_order(order_id)
+            order = OrderController(self.db, None).get_order(order_id)
             if order:
                 orders.append(order)
         
