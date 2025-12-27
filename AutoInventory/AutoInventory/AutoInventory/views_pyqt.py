@@ -12,19 +12,15 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QLineEdit, QTextEdit, QComboBox, QScrollArea,
     QListWidget, QListWidgetItem, QFrame, QSplitter, QMessageBox, QFileDialog,
-    QDialog, QDialogButtonBox, QSpinBox, QDoubleSpinBox, QGroupBox, QTableWidget, QTableWidgetItem,
+    QDialog, QDialogButtonBox, QSpinBox, QGroupBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QTabWidget, QProgressBar
 )
 from PyQt5.QtCore import Qt, QSize, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import QPixmap, QFont, QColor, QImage
 
-# 从模块导入
-from material.models import Material, Order, OrderStatus, Priority
-from material.controller import MaterialController, OrderController, ReportController
-from adc.models import ADC, ADCSpec
-from adc.controller import ADCController, PRESET_SPECS
+from models import Material, Order, OrderStatus, Priority
+from controllers import MaterialController, OrderController, ReportController
 from database import load_config
-
 
 class EmojiPicker(QDialog):
     """Emoji选择器"""
@@ -61,7 +57,6 @@ class EmojiPicker(QDialog):
     def _select_emoji(self, emoji):
         self.result = emoji
         self.accept()
-
 
 class MaterialDialog(QDialog):
     """物料编辑对话框"""
@@ -262,7 +257,6 @@ class MaterialDialog(QDialog):
         self.result = material
         self.accept()
 
-
 class OrderDialog(QDialog):
     """订单编辑对话框"""
     
@@ -350,6 +344,7 @@ class OrderDialog(QDialog):
         layout.addWidget(buttons)
     
     def _add_material(self):
+        # 简化的物料添加逻辑
         pass
     
     def _edit_material(self):
@@ -376,7 +371,6 @@ class OrderDialog(QDialog):
         
         self.result = order
         self.accept()
-
 
 class MaterialCard(QFrame):
     """物料卡片"""
@@ -488,7 +482,6 @@ class MaterialCard(QFrame):
                     border-radius: 5px;
                 }
             """)
-
 
 class MaterialDetailPanel(QWidget):
     """物料详情面板"""
@@ -605,483 +598,6 @@ class MaterialDetailPanel(QWidget):
         btn_layout.addWidget(delete_btn)
         layout.addLayout(btn_layout)
 
-
-# ==================== ADC 相关UI组件 ====================
-
-class ADCSpecDialog(QDialog):
-    """ADC规格编辑对话框"""
-    
-    def __init__(self, parent=None, spec: Optional[ADCSpec] = None, preset_specs: List[float] = None):
-        super().__init__(parent)
-        self.spec = spec
-        self.preset_specs = preset_specs or PRESET_SPECS
-        self.result = None
-        
-        self.setWindowTitle("编辑规格" if spec else "添加规格")
-        self.setFixedSize(400, 200)
-        self.setup_ui()
-    
-    def setup_ui(self):
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-        
-        # 规格选择
-        spec_layout = QHBoxLayout()
-        spec_layout.addWidget(QLabel("规格 (mg):"))
-        
-        self.spec_combo = QComboBox()
-        self.spec_combo.setEditable(True)
-        for preset in self.preset_specs:
-            self.spec_combo.addItem(f"{preset}")
-        if self.spec:
-            self.spec_combo.setCurrentText(f"{self.spec.spec_mg}")
-        spec_layout.addWidget(self.spec_combo)
-        layout.addLayout(spec_layout)
-        
-        # 数量
-        qty_layout = QHBoxLayout()
-        qty_layout.addWidget(QLabel("数量 (小管数):"))
-        self.quantity_spin = QSpinBox()
-        self.quantity_spin.setMaximum(999999)
-        self.quantity_spin.setValue(self.spec.quantity if self.spec else 0)
-        qty_layout.addWidget(self.quantity_spin)
-        layout.addLayout(qty_layout)
-        
-        layout.addStretch()
-        
-        # 按钮
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self._save)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-    
-    def _save(self):
-        try:
-            spec_mg = float(self.spec_combo.currentText())
-        except ValueError:
-            QMessageBox.critical(self, "错误", "请输入有效的规格数值")
-            return
-        
-        if spec_mg <= 0:
-            QMessageBox.critical(self, "错误", "规格必须大于0")
-            return
-        
-        if self.quantity_spin.value() < 0:
-            QMessageBox.critical(self, "错误", "数量不能为负数")
-            return
-        
-        self.result = {
-            'spec_mg': spec_mg,
-            'quantity': self.quantity_spin.value()
-        }
-        self.accept()
-
-
-class ADCDialog(QDialog):
-    """ADC编辑对话框"""
-    
-    def __init__(self, parent=None, adc: Optional[ADC] = None):
-        super().__init__(parent)
-        self.adc = adc
-        self.result = None
-        self.specs = []  # 规格列表
-        
-        if adc and adc.specs:
-            self.specs = [{'spec_mg': s.spec_mg, 'quantity': s.quantity} 
-                         if isinstance(s, ADCSpec) else s for s in adc.specs]
-        
-        self.setWindowTitle("编辑ADC" if adc else "添加ADC")
-        self.setFixedSize(700, 700)
-        self.setup_ui()
-    
-    def setup_ui(self):
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-        
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        scroll_layout = QVBoxLayout()
-        content.setLayout(scroll_layout)
-        
-        # 基本信息
-        info_group = QGroupBox("基本信息")
-        info_layout = QGridLayout()
-        
-        # Lot Number
-        info_layout.addWidget(QLabel("Lot Number *:"), 0, 0)
-        self.lot_number_edit = QLineEdit(self.adc.lot_number if self.adc else "")
-        info_layout.addWidget(self.lot_number_edit, 0, 1)
-        
-        # Sample ID
-        info_layout.addWidget(QLabel("Sample ID *:"), 1, 0)
-        self.sample_id_edit = QLineEdit(self.adc.sample_id if self.adc else "")
-        info_layout.addWidget(self.sample_id_edit, 1, 1)
-        
-        # Owner
-        info_layout.addWidget(QLabel("Owner:"), 2, 0)
-        self.owner_edit = QLineEdit(self.adc.owner if self.adc else "")
-        info_layout.addWidget(self.owner_edit, 2, 1)
-        
-        # Concentration
-        info_layout.addWidget(QLabel("Concentration (mg/mL):"), 3, 0)
-        self.concentration_spin = QDoubleSpinBox()
-        self.concentration_spin.setMaximum(9999.99)
-        self.concentration_spin.setDecimals(2)
-        self.concentration_spin.setValue(self.adc.concentration if self.adc else 0.0)
-        info_layout.addWidget(self.concentration_spin, 3, 1)
-        
-        # Storage Temp
-        info_layout.addWidget(QLabel("Storage Temp:"), 4, 0)
-        self.storage_temp_combo = QComboBox()
-        self.storage_temp_combo.setEditable(True)
-        self.storage_temp_combo.addItems(["-80°C", "-20°C", "4°C", "RT"])
-        if self.adc and self.adc.storage_temp:
-            self.storage_temp_combo.setCurrentText(self.adc.storage_temp)
-        info_layout.addWidget(self.storage_temp_combo, 4, 1)
-        
-        # Storage Position
-        info_layout.addWidget(QLabel("Storage Position:"), 5, 0)
-        self.storage_position_edit = QLineEdit(self.adc.storage_position if self.adc else "")
-        info_layout.addWidget(self.storage_position_edit, 5, 1)
-        
-        # Description
-        info_layout.addWidget(QLabel("Description:"), 6, 0)
-        self.desc_text = QTextEdit()
-        self.desc_text.setMaximumHeight(80)
-        if self.adc and self.adc.description:
-            self.desc_text.setPlainText(self.adc.description)
-        info_layout.addWidget(self.desc_text, 6, 1)
-        
-        info_group.setLayout(info_layout)
-        scroll_layout.addWidget(info_group)
-        
-        # 规格管理
-        specs_group = QGroupBox("规格库存")
-        specs_layout = QVBoxLayout()
-        
-        self.specs_table = QTableWidget()
-        self.specs_table.setColumnCount(3)
-        self.specs_table.setHorizontalHeaderLabels(["规格 (mg)", "数量 (小管)", "小计 (mg)"])
-        self.specs_table.horizontalHeader().setStretchLastSection(True)
-        specs_layout.addWidget(self.specs_table)
-        
-        spec_btn_layout = QHBoxLayout()
-        add_spec_btn = QPushButton("添加规格")
-        add_spec_btn.clicked.connect(self._add_spec)
-        edit_spec_btn = QPushButton("编辑规格")
-        edit_spec_btn.clicked.connect(self._edit_spec)
-        remove_spec_btn = QPushButton("删除规格")
-        remove_spec_btn.clicked.connect(self._remove_spec)
-        
-        spec_btn_layout.addWidget(add_spec_btn)
-        spec_btn_layout.addWidget(edit_spec_btn)
-        spec_btn_layout.addWidget(remove_spec_btn)
-        specs_layout.addLayout(spec_btn_layout)
-        
-        # 汇总显示（必须在调用_refresh_specs_table之前创建）
-        self.total_label = QLabel()
-        self.total_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #007bff;")
-        specs_layout.addWidget(self.total_label)
-        
-        # 刷新表格和汇总
-        self._refresh_specs_table()
-        
-        specs_group.setLayout(specs_layout)
-        scroll_layout.addWidget(specs_group)
-        
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
-        
-        # 按钮
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self._save)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-    
-    def _refresh_specs_table(self):
-        """刷新规格表格"""
-        self.specs_table.setRowCount(len(self.specs))
-        for row, spec in enumerate(self.specs):
-            spec_mg = spec['spec_mg']
-            quantity = spec['quantity']
-            subtotal = spec_mg * quantity
-            
-            self.specs_table.setItem(row, 0, QTableWidgetItem(f"{spec_mg}"))
-            self.specs_table.setItem(row, 1, QTableWidgetItem(f"{quantity}"))
-            self.specs_table.setItem(row, 2, QTableWidgetItem(f"{subtotal:.2f}"))
-        
-        self._update_total_label()
-    
-    def _update_total_label(self):
-        """更新汇总标签"""
-        total_mg = sum(s['spec_mg'] * s['quantity'] for s in self.specs)
-        total_vials = sum(s['quantity'] for s in self.specs)
-        self.total_label.setText(f"汇总: {total_vials} 个小管, 共计 {total_mg:.2f} mg")
-    
-    def _add_spec(self):
-        """添加规格"""
-        dialog = ADCSpecDialog(self)
-        if dialog.exec_() == QDialog.Accepted:
-            self.specs.append(dialog.result)
-            self._refresh_specs_table()
-    
-    def _edit_spec(self):
-        """编辑规格"""
-        current_row = self.specs_table.currentRow()
-        if current_row < 0:
-            QMessageBox.warning(self, "警告", "请选择要编辑的规格")
-            return
-        
-        spec_data = self.specs[current_row]
-        spec = ADCSpec(spec_mg=spec_data['spec_mg'], quantity=spec_data['quantity'])
-        
-        dialog = ADCSpecDialog(self, spec)
-        if dialog.exec_() == QDialog.Accepted:
-            self.specs[current_row] = dialog.result
-            self._refresh_specs_table()
-    
-    def _remove_spec(self):
-        """删除规格"""
-        current_row = self.specs_table.currentRow()
-        if current_row < 0:
-            QMessageBox.warning(self, "警告", "请选择要删除的规格")
-            return
-        
-        if QMessageBox.question(self, "确认", "确定要删除这个规格吗？") == QMessageBox.Yes:
-            del self.specs[current_row]
-            self._refresh_specs_table()
-    
-    def _save(self):
-        """保存"""
-        if not self.lot_number_edit.text().strip():
-            QMessageBox.critical(self, "错误", "请输入Lot Number")
-            return
-        
-        if not self.sample_id_edit.text().strip():
-            QMessageBox.critical(self, "错误", "请输入Sample ID")
-            return
-        
-        adc = ADC(
-            id=self.adc.id if self.adc else None,
-            lot_number=self.lot_number_edit.text().strip(),
-            sample_id=self.sample_id_edit.text().strip(),
-            description=self.desc_text.toPlainText().strip(),
-            concentration=self.concentration_spin.value(),
-            owner=self.owner_edit.text().strip(),
-            storage_temp=self.storage_temp_combo.currentText(),
-            storage_position=self.storage_position_edit.text().strip(),
-            specs=[ADCSpec(spec_mg=s['spec_mg'], quantity=s['quantity']) for s in self.specs]
-        )
-        
-        self.result = adc
-        self.accept()
-
-
-class ADCCard(QFrame):
-    """ADC卡片"""
-    
-    clicked = pyqtSignal(int)  # adc_id
-    
-    def __init__(self, adc: ADC, parent=None):
-        super().__init__(parent)
-        self.adc = adc
-        self.setFrameStyle(QFrame.Box)
-        self.setLineWidth(2)
-        self.setStyleSheet("""
-            QFrame {
-                background-color: white;
-                border-radius: 5px;
-            }
-        """)
-        self.setup_ui()
-    
-    def setup_ui(self):
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-        
-        # 标题行
-        title_layout = QHBoxLayout()
-        
-        lot_label = QLabel(f"Lot#: {self.adc.lot_number}")
-        lot_label.setFont(QFont("Microsoft YaHei", 12, QFont.Bold))
-        title_layout.addWidget(lot_label)
-        
-        title_layout.addStretch()
-        layout.addLayout(title_layout)
-        
-        # Sample ID
-        sample_label = QLabel(f"Sample ID: {self.adc.sample_id}")
-        sample_label.setStyleSheet("color: #6c757d;")
-        layout.addWidget(sample_label)
-        
-        # Owner
-        if self.adc.owner:
-            owner_label = QLabel(f"👤 {self.adc.owner}")
-            layout.addWidget(owner_label)
-        
-        # 存储信息
-        storage_info = []
-        if self.adc.storage_temp:
-            storage_info.append(self.adc.storage_temp)
-        if self.adc.storage_position:
-            storage_info.append(self.adc.storage_position)
-        if storage_info:
-            storage_label = QLabel(f"📍 {' / '.join(storage_info)}")
-            layout.addWidget(storage_label)
-        
-        # 汇总信息
-        total_mg = self.adc.get_total_mg()
-        total_vials = self.adc.get_total_vials()
-        summary_label = QLabel(f"📦 {total_vials} 管 | 总量: {total_mg:.2f} mg")
-        summary_label.setStyleSheet("font-weight: bold; color: #007bff;")
-        layout.addWidget(summary_label)
-        
-        # 鼠标点击事件
-        self.mousePressEvent = self._on_click
-    
-    def _on_click(self, event):
-        self.clicked.emit(self.adc.id)
-    
-    def set_selected(self, selected: bool):
-        """设置选中状态"""
-        if selected:
-            self.setStyleSheet("""
-                QFrame {
-                    background-color: white;
-                    border: 3px solid #007bff;
-                    border-radius: 5px;
-                }
-            """)
-        else:
-            self.setStyleSheet("""
-                QFrame {
-                    background-color: white;
-                    border-radius: 5px;
-                }
-            """)
-
-
-class ADCDetailPanel(QWidget):
-    """ADC详情面板"""
-    
-    edit_requested = pyqtSignal(int)  # adc_id
-    delete_requested = pyqtSignal(int)  # adc_id
-    
-    def __init__(self, adc: ADC, parent=None):
-        super().__init__(parent)
-        self.adc = adc
-        self.setup_ui()
-    
-    def setup_ui(self):
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-        
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        scroll_layout = QVBoxLayout()
-        content.setLayout(scroll_layout)
-        
-        # Lot Number 标题
-        lot_label = QLabel(f"Lot#: {self.adc.lot_number}")
-        lot_label.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
-        lot_label.setAlignment(Qt.AlignCenter)
-        scroll_layout.addWidget(lot_label)
-        
-        # Sample ID
-        sample_label = QLabel(f"Sample ID: {self.adc.sample_id}")
-        sample_label.setFont(QFont("Microsoft YaHei", 14))
-        sample_label.setAlignment(Qt.AlignCenter)
-        sample_label.setStyleSheet("color: #6c757d;")
-        scroll_layout.addWidget(sample_label)
-        
-        # 基本信息
-        info_group = QGroupBox("基本信息")
-        info_layout = QVBoxLayout()
-        
-        if self.adc.owner:
-            info_layout.addWidget(QLabel(f"👤 Owner: {self.adc.owner}"))
-        if self.adc.concentration > 0:
-            info_layout.addWidget(QLabel(f"💉 Concentration: {self.adc.concentration} mg/mL"))
-        if self.adc.storage_temp:
-            info_layout.addWidget(QLabel(f"🌡️ Storage Temp: {self.adc.storage_temp}"))
-        if self.adc.storage_position:
-            info_layout.addWidget(QLabel(f"📍 Storage Position: {self.adc.storage_position}"))
-        if self.adc.created_at:
-            created_str = self.adc.created_at.strftime('%Y-%m-%d %H:%M') if isinstance(self.adc.created_at, datetime) else str(self.adc.created_at)
-            info_layout.addWidget(QLabel(f"📅 入库时间: {created_str}"))
-        
-        info_group.setLayout(info_layout)
-        scroll_layout.addWidget(info_group)
-        
-        # 描述
-        if self.adc.description:
-            desc_group = QGroupBox("描述")
-            desc_layout = QVBoxLayout()
-            desc_text = QTextEdit()
-            desc_text.setPlainText(self.adc.description)
-            desc_text.setReadOnly(True)
-            desc_text.setMaximumHeight(80)
-            desc_layout.addWidget(desc_text)
-            desc_group.setLayout(desc_layout)
-            scroll_layout.addWidget(desc_group)
-        
-        # 规格列表
-        specs_group = QGroupBox("规格库存")
-        specs_layout = QVBoxLayout()
-        
-        specs_table = QTableWidget()
-        specs_table.setColumnCount(3)
-        specs_table.setHorizontalHeaderLabels(["规格 (mg)", "数量 (小管)", "小计 (mg)"])
-        specs_table.horizontalHeader().setStretchLastSection(True)
-        specs_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        
-        specs = self.adc.specs if self.adc.specs else []
-        specs_table.setRowCount(len(specs))
-        
-        for row, spec in enumerate(specs):
-            if isinstance(spec, ADCSpec):
-                spec_mg = spec.spec_mg
-                quantity = spec.quantity
-            else:
-                spec_mg = spec.get('spec_mg', 0)
-                quantity = spec.get('quantity', 0)
-            
-            subtotal = spec_mg * quantity
-            specs_table.setItem(row, 0, QTableWidgetItem(f"{spec_mg}"))
-            specs_table.setItem(row, 1, QTableWidgetItem(f"{quantity}"))
-            specs_table.setItem(row, 2, QTableWidgetItem(f"{subtotal:.2f}"))
-        
-        specs_layout.addWidget(specs_table)
-        
-        # 汇总
-        total_mg = self.adc.get_total_mg()
-        total_vials = self.adc.get_total_vials()
-        total_label = QLabel(f"汇总: {total_vials} 个小管, 共计 {total_mg:.2f} mg")
-        total_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #007bff;")
-        specs_layout.addWidget(total_label)
-        
-        specs_group.setLayout(specs_layout)
-        scroll_layout.addWidget(specs_group)
-        
-        scroll_layout.addStretch()
-        
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
-        
-        # 按钮
-        btn_layout = QVBoxLayout()
-        edit_btn = QPushButton("编辑ADC")
-        edit_btn.clicked.connect(lambda: self.edit_requested.emit(self.adc.id))
-        delete_btn = QPushButton("删除ADC")
-        delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.adc.id))
-        
-        btn_layout.addWidget(edit_btn)
-        btn_layout.addWidget(delete_btn)
-        layout.addLayout(btn_layout)
-
-
 class MainWindow(QMainWindow):
     """主窗口"""
     
@@ -1096,17 +612,11 @@ class MainWindow(QMainWindow):
         self.material_controller = MaterialController(self.db_manager)
         self.order_controller = OrderController(self.db_manager, self.material_controller)
         self.report_controller = ReportController(self.db_manager)
-        self.adc_controller = ADCController(self.db_manager)
         
-        # 物料相关缓存
+        # 存储卡片和详情面板
         self.material_cards = {}
         self.detail_panels = {}
         self.selected_material_id = None
-        
-        # ADC相关缓存
-        self.adc_cards = {}
-        self.adc_detail_panels = {}
-        self.selected_adc_id = None
         
         self.setup_ui()
         self.refresh_data()
@@ -1121,28 +631,23 @@ class MainWindow(QMainWindow):
         central_widget.setLayout(main_layout)
         
         # 创建标签页
-        self.tabs = QTabWidget()
-        main_layout.addWidget(self.tabs)
+        tabs = QTabWidget()
+        main_layout.addWidget(tabs)
         
         # 物料管理标签页
         material_tab = QWidget()
         self.setup_material_tab(material_tab)
-        self.tabs.addTab(material_tab, "物料管理")
+        tabs.addTab(material_tab, "物料管理")
         
         # 订单管理标签页
         order_tab = QWidget()
         self.setup_order_tab(order_tab)
-        self.tabs.addTab(order_tab, "订单管理")
-        
-        # ADC管理标签页
-        adc_tab = QWidget()
-        self.setup_adc_tab(adc_tab)
-        self.tabs.addTab(adc_tab, "ADC管理")
+        tabs.addTab(order_tab, "订单管理")
         
         # 报告生成标签页
         report_tab = QWidget()
         self.setup_report_tab(report_tab)
-        self.tabs.addTab(report_tab, "报告生成")
+        tabs.addTab(report_tab, "报告生成")
         
         # 状态栏
         self.statusBar().showMessage("就绪 - 支持多用户并发访问")
@@ -1264,68 +769,6 @@ class MainWindow(QMainWindow):
         self.order_table.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.order_table)
     
-    def setup_adc_tab(self, parent):
-        """设置ADC管理标签页"""
-        layout = QVBoxLayout()
-        parent.setLayout(layout)
-        
-        # 工具栏
-        toolbar = QHBoxLayout()
-        
-        add_btn = QPushButton("添加ADC")
-        add_btn.clicked.connect(self.add_adc)
-        toolbar.addWidget(add_btn)
-        
-        edit_btn = QPushButton("编辑ADC")
-        edit_btn.clicked.connect(self.edit_adc)
-        toolbar.addWidget(edit_btn)
-        
-        delete_btn = QPushButton("删除ADC")
-        delete_btn.clicked.connect(self.delete_adc)
-        toolbar.addWidget(delete_btn)
-        
-        refresh_btn = QPushButton("刷新")
-        refresh_btn.clicked.connect(self.refresh_adcs)
-        toolbar.addWidget(refresh_btn)
-        
-        toolbar.addWidget(QLabel("搜索SampleID:"))
-        self.adc_search_edit = QLineEdit()
-        self.adc_search_edit.textChanged.connect(self.search_adcs)
-        toolbar.addWidget(self.adc_search_edit)
-        
-        toolbar.addStretch()
-        layout.addLayout(toolbar)
-        
-        # 创建分割器
-        splitter = QSplitter(Qt.Horizontal)
-        
-        # 左侧ADC列表
-        list_widget = QWidget()
-        list_layout = QVBoxLayout()
-        list_widget.setLayout(list_layout)
-        
-        self.adc_scroll = QScrollArea()
-        self.adc_scroll.setWidgetResizable(True)
-        self.adc_scroll.setWidget(QWidget())
-        list_layout.addWidget(self.adc_scroll)
-        
-        splitter.addWidget(list_widget)
-        splitter.setStretchFactor(0, 2)
-        
-        # 右侧详情面板
-        self.adc_detail_widget = QWidget()
-        self.adc_detail_layout = QVBoxLayout()
-        self.adc_detail_widget.setLayout(self.adc_detail_layout)
-        
-        self.adc_detail_placeholder = QLabel("请点击左侧ADC卡片查看详情")
-        self.adc_detail_placeholder.setAlignment(Qt.AlignCenter)
-        self.adc_detail_layout.addWidget(self.adc_detail_placeholder)
-        
-        splitter.addWidget(self.adc_detail_widget)
-        splitter.setStretchFactor(1, 1)
-        
-        layout.addWidget(splitter)
-    
     def setup_report_tab(self, parent):
         """设置报告生成标签页"""
         layout = QVBoxLayout()
@@ -1358,10 +801,7 @@ class MainWindow(QMainWindow):
         """刷新所有数据"""
         self.refresh_materials()
         self.refresh_orders()
-        self.refresh_adcs()
         self.refresh_report_orders()
-    
-    # ==================== 物料相关方法 ====================
     
     def refresh_materials(self):
         """刷新物料列表"""
@@ -1389,7 +829,7 @@ class MainWindow(QMainWindow):
         
         for material in materials:
             card = MaterialCard(material)
-            card.clicked.connect(self._on_material_card_clicked)
+            card.clicked.connect(self._on_card_clicked)
             layout.addWidget(card)
             self.material_cards[material.id] = card
         
@@ -1400,8 +840,8 @@ class MainWindow(QMainWindow):
         # 显示placeholder
         self.detail_placeholder.show()
     
-    def _on_material_card_clicked(self, material_id: int):
-        """物料卡片点击事件"""
+    def _on_card_clicked(self, material_id: int):
+        """卡片点击事件"""
         # 取消之前选中的卡片
         if self.selected_material_id:
             if self.selected_material_id in self.material_cards:
@@ -1412,7 +852,7 @@ class MainWindow(QMainWindow):
             self.material_cards[material_id].set_selected(True)
         self.selected_material_id = material_id
         
-        # 显示详情
+        # 显示详情（从缓存）
         self._show_material_detail(material_id)
     
     def _show_material_detail(self, material_id: int):
@@ -1422,8 +862,10 @@ class MainWindow(QMainWindow):
         
         # 如果已经有缓存的面板，直接显示
         if material_id in self.detail_panels:
+            # 隐藏所有面板
             for mid, panel in self.detail_panels.items():
                 panel.hide()
+            # 显示当前面板
             self.detail_panels[material_id].show()
             return
         
@@ -1446,7 +888,7 @@ class MainWindow(QMainWindow):
             material = dialog.result
             if material:
                 try:
-                    self.material_controller.create_material(material)
+                    material_id = self.material_controller.create_material(material)
                     QMessageBox.information(self, "成功", "物料添加成功")
                     self.refresh_materials()
                 except Exception as e:
@@ -1508,8 +950,6 @@ class MainWindow(QMainWindow):
             materials = self.material_controller.get_all_materials()
         
         self.update_material_cards(materials)
-    
-    # ==================== 订单相关方法 ====================
     
     def refresh_orders(self):
         """刷新订单列表"""
@@ -1641,11 +1081,13 @@ class MainWindow(QMainWindow):
     
     def generate_report(self):
         """生成订单报告"""
+        # 获取选中的行
         selected_ranges = self.report_table.selectedRanges()
         if not selected_ranges:
             QMessageBox.warning(self, "警告", "请选择要生成报告的订单")
             return
         
+        # 获取选中的订单ID
         order_ids = set()
         for range_item in selected_ranges:
             top_row = range_item.topRow()
@@ -1659,9 +1101,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "请选择要生成报告的订单")
             return
         
+        # 生成报告
         try:
             html_content = self.report_controller.generate_order_report(list(order_ids))
             
+            # 保存文件
             filename, _ = QFileDialog.getSaveFileName(
                 self, "保存报告", "order_report.html", "HTML文件 (*.html)"
             )
@@ -1672,155 +1116,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "成功", f"报告已保存到: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"生成报告失败: {str(e)}")
-    
-    # ==================== ADC相关方法 ====================
-    
-    def refresh_adcs(self):
-        """刷新ADC列表"""
-        adcs = self.adc_controller.get_all_adcs()
-        self.update_adc_cards(adcs)
-    
-    def update_adc_cards(self, adcs: List[ADC]):
-        """更新ADC卡片"""
-        # 清空现有卡片
-        for card in self.adc_cards.values():
-            card.deleteLater()
-        self.adc_cards.clear()
-        
-        # 清空详情面板缓存
-        for panel in self.adc_detail_panels.values():
-            panel.deleteLater()
-        self.adc_detail_panels.clear()
-        
-        self.selected_adc_id = None
-        
-        # 创建新卡片
-        container = QWidget()
-        layout = QVBoxLayout()
-        container.setLayout(layout)
-        
-        for adc in adcs:
-            card = ADCCard(adc)
-            card.clicked.connect(self._on_adc_card_clicked)
-            layout.addWidget(card)
-            self.adc_cards[adc.id] = card
-        
-        layout.addStretch()
-        
-        self.adc_scroll.setWidget(container)
-        
-        # 显示placeholder
-        self.adc_detail_placeholder.show()
-    
-    def _on_adc_card_clicked(self, adc_id: int):
-        """ADC卡片点击事件"""
-        # 取消之前选中的卡片
-        if self.selected_adc_id:
-            if self.selected_adc_id in self.adc_cards:
-                self.adc_cards[self.selected_adc_id].set_selected(False)
-        
-        # 选中当前卡片
-        if adc_id in self.adc_cards:
-            self.adc_cards[adc_id].set_selected(True)
-        self.selected_adc_id = adc_id
-        
-        # 显示详情
-        self._show_adc_detail(adc_id)
-    
-    def _show_adc_detail(self, adc_id: int):
-        """显示ADC详情"""
-        # 隐藏placeholder
-        self.adc_detail_placeholder.hide()
-        
-        # 如果已经有缓存的面板，直接显示
-        if adc_id in self.adc_detail_panels:
-            for aid, panel in self.adc_detail_panels.items():
-                panel.hide()
-            self.adc_detail_panels[adc_id].show()
-            return
-        
-        # 从缓存获取ADC信息
-        adc = self.adc_controller.get_adc(adc_id)
-        if not adc:
-            return
-        
-        # 创建新的详情面板并缓存
-        panel = ADCDetailPanel(adc, self.adc_detail_widget)
-        panel.edit_requested.connect(self.edit_adc_by_id)
-        panel.delete_requested.connect(self.delete_adc_by_id)
-        self.adc_detail_panels[adc_id] = panel
-        self.adc_detail_layout.addWidget(panel)
-    
-    def add_adc(self):
-        """添加ADC"""
-        dialog = ADCDialog(self)
-        if dialog.exec_() == QDialog.Accepted:
-            adc = dialog.result
-            if adc:
-                try:
-                    self.adc_controller.create_adc(adc)
-                    QMessageBox.information(self, "成功", "ADC添加成功")
-                    self.refresh_adcs()
-                except Exception as e:
-                    QMessageBox.critical(self, "错误", f"添加失败: {str(e)}")
-    
-    def edit_adc(self):
-        """编辑ADC"""
-        if not self.selected_adc_id:
-            QMessageBox.warning(self, "警告", "请先选择一个ADC")
-            return
-        
-        self.edit_adc_by_id(self.selected_adc_id)
-    
-    def edit_adc_by_id(self, adc_id: int):
-        """根据ID编辑ADC"""
-        adc = self.adc_controller.get_adc(adc_id)
-        if not adc:
-            QMessageBox.critical(self, "错误", "ADC不存在")
-            return
-        
-        dialog = ADCDialog(self, adc)
-        if dialog.exec_() == QDialog.Accepted:
-            updated_adc = dialog.result
-            if updated_adc:
-                try:
-                    success, message = self.adc_controller.update_adc(updated_adc)
-                    if success:
-                        QMessageBox.information(self, "成功", message)
-                        self.refresh_adcs()
-                    else:
-                        QMessageBox.critical(self, "错误", message)
-                except Exception as e:
-                    QMessageBox.critical(self, "错误", f"更新失败: {str(e)}")
-    
-    def delete_adc(self):
-        """删除ADC"""
-        if not self.selected_adc_id:
-            QMessageBox.warning(self, "警告", "请先选择一个ADC")
-            return
-        
-        self.delete_adc_by_id(self.selected_adc_id)
-    
-    def delete_adc_by_id(self, adc_id: int):
-        """根据ID删除ADC"""
-        if QMessageBox.question(self, "确认", "确定要删除这个ADC吗？") == QMessageBox.Yes:
-            try:
-                self.adc_controller.delete_adc(adc_id)
-                QMessageBox.information(self, "成功", "ADC删除成功")
-                self.refresh_adcs()
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"删除失败: {str(e)}")
-    
-    def search_adcs(self):
-        """搜索ADC"""
-        keyword = self.adc_search_edit.text()
-        if keyword:
-            adcs = self.adc_controller.search_by_sample_id(keyword)
-        else:
-            adcs = self.adc_controller.get_all_adcs()
-        
-        self.update_adc_cards(adcs)
-
 
 def main():
     """主函数"""
@@ -1831,6 +1126,6 @@ def main():
     
     sys.exit(app.exec_())
 
-
 if __name__ == "__main__":
     main()
+

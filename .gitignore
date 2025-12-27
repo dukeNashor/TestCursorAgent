@@ -1,1 +1,3 @@
 AutoInventory/AutoInventory/__pycache__/
+*.pyc
+AutoInventory/AutoInventory/.vs/

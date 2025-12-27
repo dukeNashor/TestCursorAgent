@@ -5,12 +5,6 @@
 import sys
 import os
 
-# 确保当前目录在路径中，以便正确导入模块
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
-
-
 def main():
     """主函数"""
     try:
@@ -33,7 +27,6 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

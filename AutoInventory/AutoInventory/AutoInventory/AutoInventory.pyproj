@@ -4,13 +4,14 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>6a38ed90-c5cb-4e0b-9d73-1e4196d89f9f</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>main_view.py</StartupFile>
+    <StartupFile>main.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
     <OutputPath>.</OutputPath>
     <Name>AutoInventory</Name>
     <RootNamespace>AutoInventory</RootNamespace>
+    <SuppressConfigureTestFrameworkPrompt>true</SuppressConfigureTestFrameworkPrompt>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -22,17 +23,14 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="AutoInventory.py" />
+    <Compile Include="controllers.py" />
     <Compile Include="database.py" />
+    <Compile Include="init_sample_data.py" />
     <Compile Include="main.py" />
-    <Compile Include="main_view.py" />
-    <Compile Include="material_controller.py" />
-    <Compile Include="material_model.py" />
-    <Compile Include="order_controller.py" />
-    <Compile Include="order_model.py" />
-    <Compile Include="report_generator.py" />
-  </ItemGroup>
-  <ItemGroup>
-    <Content Include="README.md" />
+    <Compile Include="models.py" />
+    <Compile Include="test_system.py" />
+    <Compile Include="views.py" />
+    <Compile Include="views_pyqt.py" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
