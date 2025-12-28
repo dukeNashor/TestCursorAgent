@@ -23,7 +23,10 @@ from material.models import Material, Order, OrderStatus, Priority
 from material.controller import MaterialController, OrderController, ReportController
 from adc.models import ADC, ADCSpec, ADCOutbound, ADCInbound, ADCMovementItem
 from adc.controller import ADCController, PRESET_SPECS
-from database import load_config
+from database import (
+    load_config, save_config, get_database_list, add_database, 
+    remove_database, set_current_database, DatabaseManager
+)
 
 
 class EmojiPicker(QDialog):
@@ -745,13 +748,23 @@ class ADCDialog(QDialog):
         self.storage_position_edit = QLineEdit(self.adc.storage_position if self.adc else "")
         info_layout.addWidget(self.storage_position_edit, 5, 1)
         
+        # Antibody
+        info_layout.addWidget(QLabel("Antibody:"), 6, 0)
+        self.antibody_edit = QLineEdit(self.adc.antibody if self.adc else "")
+        info_layout.addWidget(self.antibody_edit, 6, 1)
+        
+        # Linker-payload
+        info_layout.addWidget(QLabel("Linker-payload:"), 7, 0)
+        self.linker_payload_edit = QLineEdit(self.adc.linker_payload if self.adc else "")
+        info_layout.addWidget(self.linker_payload_edit, 7, 1)
+        
         # Description
-        info_layout.addWidget(QLabel("Description:"), 6, 0)
+        info_layout.addWidget(QLabel("Description:"), 8, 0)
         self.desc_text = QTextEdit()
         self.desc_text.setMaximumHeight(80)
         if self.adc and self.adc.description:
             self.desc_text.setPlainText(self.adc.description)
-        info_layout.addWidget(self.desc_text, 6, 1)
+        info_layout.addWidget(self.desc_text, 8, 1)
         
         info_group.setLayout(info_layout)
         scroll_layout.addWidget(info_group)
@@ -764,6 +777,7 @@ class ADCDialog(QDialog):
         self.specs_table.setColumnCount(3)
         self.specs_table.setHorizontalHeaderLabels(["规格 (mg)", "数量 (小管)", "小计 (mg)"])
         self.specs_table.horizontalHeader().setStretchLastSection(True)
+        self.specs_table.setEditTriggers(QTableWidget.NoEditTriggers)  # 设为只读
         specs_layout.addWidget(self.specs_table)
         
         spec_btn_layout = QHBoxLayout()
@@ -871,6 +885,8 @@ class ADCDialog(QDialog):
             owner=self.owner_edit.text().strip(),
             storage_temp=self.storage_temp_combo.currentText(),
             storage_position=self.storage_position_edit.text().strip(),
+            antibody=self.antibody_edit.text().strip(),
+            linker_payload=self.linker_payload_edit.text().strip(),
             specs=[ADCSpec(spec_mg=s['spec_mg'], quantity=s['quantity']) for s in self.specs]
         )
         
@@ -1000,17 +1016,46 @@ class ADCDetailPanel(QWidget):
         info_group = QGroupBox("基本信息")
         info_layout = QVBoxLayout()
         
-        if self.adc.owner:
-            info_layout.addWidget(QLabel(f"👤 Owner: {self.adc.owner}"))
-        if self.adc.concentration > 0:
-            info_layout.addWidget(QLabel(f"💉 Concentration: {self.adc.concentration} mg/mL"))
-        if self.adc.storage_temp:
-            info_layout.addWidget(QLabel(f"🌡️ Storage Temp: {self.adc.storage_temp}"))
-        if self.adc.storage_position:
-            info_layout.addWidget(QLabel(f"📍 Storage Position: {self.adc.storage_position}"))
+        # 始终显示所有属性，缺失时显示"N/A"
+        missing_style = "color: #000000; font-style: italic;"
+        
+        owner_text = self.adc.owner if self.adc.owner else '<span style="' + missing_style + '">N/A</span>'
+        owner_label = QLabel(f"👤 Owner: {owner_text}")
+        owner_label.setTextFormat(Qt.RichText)
+        info_layout.addWidget(owner_label)
+        
+        concentration_text = f"{self.adc.concentration} mg/mL" if self.adc.concentration > 0 else '<span style="' + missing_style + '">N/A</span>'
+        concentration_label = QLabel(f"💉 Concentration: {concentration_text}")
+        concentration_label.setTextFormat(Qt.RichText)
+        info_layout.addWidget(concentration_label)
+        
+        storage_temp_text = self.adc.storage_temp if self.adc.storage_temp else '<span style="' + missing_style + '">N/A</span>'
+        storage_temp_label = QLabel(f"🌡️ Storage Temp: {storage_temp_text}")
+        storage_temp_label.setTextFormat(Qt.RichText)
+        info_layout.addWidget(storage_temp_label)
+        
+        storage_position_text = self.adc.storage_position if self.adc.storage_position else '<span style="' + missing_style + '">N/A</span>'
+        storage_position_label = QLabel(f"📍 Storage Position: {storage_position_text}")
+        storage_position_label.setTextFormat(Qt.RichText)
+        info_layout.addWidget(storage_position_label)
+        
+        antibody_text = self.adc.antibody if self.adc.antibody else '<span style="' + missing_style + '">N/A</span>'
+        antibody_label = QLabel(f"🧬 Antibody: {antibody_text}")
+        antibody_label.setTextFormat(Qt.RichText)
+        info_layout.addWidget(antibody_label)
+        
+        linker_payload_text = self.adc.linker_payload if self.adc.linker_payload else '<span style="' + missing_style + '">N/A</span>'
+        linker_payload_label = QLabel(f"🔗 Linker-payload: {linker_payload_text}")
+        linker_payload_label.setTextFormat(Qt.RichText)
+        info_layout.addWidget(linker_payload_label)
+        
         if self.adc.created_at:
             created_str = self.adc.created_at.strftime('%Y-%m-%d %H:%M') if isinstance(self.adc.created_at, datetime) else str(self.adc.created_at)
-            info_layout.addWidget(QLabel(f"📅 入库时间: {created_str}"))
+        else:
+            created_str = '<span style="' + missing_style + '">N/A</span>'
+        created_label = QLabel(f"📅 入库时间: {created_str}")
+        created_label.setTextFormat(Qt.RichText)
+        info_layout.addWidget(created_label)
         
         info_group.setLayout(info_layout)
         scroll_layout.addWidget(info_group)
@@ -1159,7 +1204,7 @@ class ADCOutboundDialog(QDialog):
         self.items = []  # 出库明细列表
         
         self.setWindowTitle("ADC出库")
-        self.setFixedSize(700, 600)
+        self.setFixedSize(800, 700)
         self.setup_ui()
     
     def setup_ui(self):
@@ -1174,6 +1219,7 @@ class ADCOutboundDialog(QDialog):
         info_layout.addWidget(QLabel("Lot Number *:"), 0, 0)
         self.lot_combo = QComboBox()
         self.lot_combo.setEditable(True)
+        self.lot_combo.currentTextChanged.connect(self._on_lot_changed)
         if self.adc_controller:
             for adc in self.adc_controller.get_all_adcs():
                 self.lot_combo.addItem(adc.lot_number)
@@ -1194,20 +1240,28 @@ class ADCOutboundDialog(QDialog):
         self.address_edit = QLineEdit()
         info_layout.addWidget(self.address_edit, 3, 1)
         
-        # 寄送日期
-        info_layout.addWidget(QLabel("寄送日期:"), 4, 0)
-        self.date_edit = QDateEdit()
-        self.date_edit.setDate(QDate.currentDate())
-        self.date_edit.setCalendarPopup(True)
-        info_layout.addWidget(self.date_edit, 4, 1)
-        
         # 备注
-        info_layout.addWidget(QLabel("备注:"), 5, 0)
+        info_layout.addWidget(QLabel("备注:"), 4, 0)
         self.notes_edit = QLineEdit()
-        info_layout.addWidget(self.notes_edit, 5, 1)
+        info_layout.addWidget(self.notes_edit, 4, 1)
         
         info_group.setLayout(info_layout)
         layout.addWidget(info_group)
+        
+        # 当前库存（只读显示）
+        stock_group = QGroupBox("当前库存")
+        stock_layout = QVBoxLayout()
+        
+        self.stock_table = QTableWidget()
+        self.stock_table.setColumnCount(3)
+        self.stock_table.setHorizontalHeaderLabels(["规格 (mg)", "当前库存 (小管)", "库存 (mg)"])
+        self.stock_table.horizontalHeader().setStretchLastSection(True)
+        self.stock_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.stock_table.setSelectionBehavior(QTableWidget.SelectRows)  # 整行选择
+        stock_layout.addWidget(self.stock_table)
+        
+        stock_group.setLayout(stock_layout)
+        layout.addWidget(stock_group)
         
         # 出库明细
         items_group = QGroupBox("出库明细")
@@ -1217,6 +1271,8 @@ class ADCOutboundDialog(QDialog):
         self.items_table.setColumnCount(3)
         self.items_table.setHorizontalHeaderLabels(["规格 (mg)", "数量 (小管)", "小计 (mg)"])
         self.items_table.horizontalHeader().setStretchLastSection(True)
+        self.items_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.items_table.setSelectionBehavior(QTableWidget.SelectRows)  # 整行选择
         items_layout.addWidget(self.items_table)
         
         item_btn_layout = QHBoxLayout()
@@ -1243,6 +1299,43 @@ class ADCOutboundDialog(QDialog):
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        
+        # 初始化库存显示
+        self._on_lot_changed(self.lot_combo.currentText())
+    
+    def _on_lot_changed(self, lot_number: str):
+        """Lot Number变更时，更新库存显示"""
+        if not hasattr(self, 'stock_table'):
+            return
+        
+        self.stock_table.setRowCount(0)
+        if self.adc_controller and lot_number:
+            adc = self.adc_controller.get_adc_by_lot_number(lot_number)
+            if adc and adc.specs:
+                self.stock_table.setRowCount(len(adc.specs))
+                for row, spec in enumerate(adc.specs):
+                    spec_mg = spec.spec_mg if isinstance(spec, ADCSpec) else spec.get('spec_mg', 0)
+                    quantity = spec.quantity if isinstance(spec, ADCSpec) else spec.get('quantity', 0)
+                    total = spec_mg * quantity
+                    
+                    self.stock_table.setItem(row, 0, QTableWidgetItem(f"{spec_mg}"))
+                    self.stock_table.setItem(row, 1, QTableWidgetItem(f"{quantity}"))
+                    self.stock_table.setItem(row, 2, QTableWidgetItem(f"{total:.2f}"))
+        
+        # 动态调整表格高度：显示所有行但不超过最大高度
+        row_count = self.stock_table.rowCount()
+        row_height = 30  # 每行高度
+        header_height = 30  # 表头高度
+        max_height = 180  # 最大高度
+        min_height = 60  # 最小高度
+        
+        if row_count > 0:
+            calculated_height = header_height + row_count * row_height + 5
+            table_height = min(max(calculated_height, min_height), max_height)
+        else:
+            table_height = min_height
+        
+        self.stock_table.setFixedHeight(table_height)
     
     def _refresh_items_table(self):
         self.items_table.setRowCount(len(self.items))
@@ -1261,8 +1354,24 @@ class ADCOutboundDialog(QDialog):
         
         self.total_label.setText(f"合计: {total_vials} 个小管, {total_mg:.2f} mg")
     
+    def _get_available_specs(self) -> List[float]:
+        """获取当前选中LotNumber的可用规格列表"""
+        lot_number = self.lot_combo.currentText().strip()
+        if self.adc_controller and lot_number:
+            adc = self.adc_controller.get_adc_by_lot_number(lot_number)
+            if adc and adc.specs:
+                specs = []
+                for spec in adc.specs:
+                    spec_mg = spec.spec_mg if isinstance(spec, ADCSpec) else spec.get('spec_mg', 0)
+                    quantity = spec.quantity if isinstance(spec, ADCSpec) else spec.get('quantity', 0)
+                    if quantity > 0:  # 只显示有库存的规格
+                        specs.append(spec_mg)
+                return specs
+        return PRESET_SPECS  # 如果没有可用规格，返回默认列表
+    
     def _add_item(self):
-        dialog = ADCMovementItemDialog(self)
+        available_specs = self._get_available_specs()
+        dialog = ADCMovementItemDialog(self, preset_specs=available_specs)
         if dialog.exec_() == QDialog.Accepted:
             self.items.append(dialog.result)
             self._refresh_items_table()
@@ -1273,7 +1382,8 @@ class ADCOutboundDialog(QDialog):
             QMessageBox.warning(self, "警告", "请选择要编辑的明细")
             return
         
-        dialog = ADCMovementItemDialog(self, self.items[current_row])
+        available_specs = self._get_available_specs()
+        dialog = ADCMovementItemDialog(self, self.items[current_row], preset_specs=available_specs)
         if dialog.exec_() == QDialog.Accepted:
             self.items[current_row] = dialog.result
             self._refresh_items_table()
@@ -1306,7 +1416,7 @@ class ADCOutboundDialog(QDialog):
             requester=self.requester_edit.text().strip(),
             operator=self.operator_edit.text().strip(),
             shipping_address=self.address_edit.text().strip(),
-            shipping_date=datetime.strptime(self.date_edit.date().toString("yyyy-MM-dd"), "%Y-%m-%d"),
+            shipping_date=datetime.now(),  # 使用当前时间
             notes=self.notes_edit.text().strip(),
             items=[ADCMovementItem(spec_mg=i['spec_mg'], quantity=i['quantity']) for i in self.items]
         )
@@ -1325,7 +1435,7 @@ class ADCInboundDialog(QDialog):
         self.items = []  # 入库明细列表
         
         self.setWindowTitle("ADC入库")
-        self.setFixedSize(700, 600)
+        self.setFixedSize(800, 700)
         self.setup_ui()
     
     def setup_ui(self):
@@ -1362,20 +1472,28 @@ class ADCInboundDialog(QDialog):
         self.position_edit = QLineEdit()
         info_layout.addWidget(self.position_edit, 3, 1)
         
-        # 存放日期
-        info_layout.addWidget(QLabel("存放日期:"), 4, 0)
-        self.date_edit = QDateEdit()
-        self.date_edit.setDate(QDate.currentDate())
-        self.date_edit.setCalendarPopup(True)
-        info_layout.addWidget(self.date_edit, 4, 1)
-        
         # 备注
-        info_layout.addWidget(QLabel("备注:"), 5, 0)
+        info_layout.addWidget(QLabel("备注:"), 4, 0)
         self.notes_edit = QLineEdit()
-        info_layout.addWidget(self.notes_edit, 5, 1)
+        info_layout.addWidget(self.notes_edit, 4, 1)
         
         info_group.setLayout(info_layout)
         layout.addWidget(info_group)
+        
+        # 当前库存（只读显示）
+        stock_group = QGroupBox("当前库存")
+        stock_layout = QVBoxLayout()
+        
+        self.stock_table = QTableWidget()
+        self.stock_table.setColumnCount(3)
+        self.stock_table.setHorizontalHeaderLabels(["规格 (mg)", "当前库存 (小管)", "库存 (mg)"])
+        self.stock_table.horizontalHeader().setStretchLastSection(True)
+        self.stock_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.stock_table.setSelectionBehavior(QTableWidget.SelectRows)  # 整行选择
+        stock_layout.addWidget(self.stock_table)
+        
+        stock_group.setLayout(stock_layout)
+        layout.addWidget(stock_group)
         
         # 入库明细
         items_group = QGroupBox("入库明细")
@@ -1385,6 +1503,8 @@ class ADCInboundDialog(QDialog):
         self.items_table.setColumnCount(3)
         self.items_table.setHorizontalHeaderLabels(["规格 (mg)", "数量 (小管)", "小计 (mg)"])
         self.items_table.horizontalHeader().setStretchLastSection(True)
+        self.items_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.items_table.setSelectionBehavior(QTableWidget.SelectRows)  # 整行选择
         items_layout.addWidget(self.items_table)
         
         item_btn_layout = QHBoxLayout()
@@ -1416,14 +1536,42 @@ class ADCInboundDialog(QDialog):
         self._on_lot_changed(self.lot_combo.currentText())
     
     def _on_lot_changed(self, lot_number: str):
-        """Lot Number变更时，自动填充存放地址"""
-        # 检查 position_edit 是否已创建（避免初始化时的信号触发）
-        if not hasattr(self, 'position_edit'):
+        """Lot Number变更时，自动填充存放地址和更新库存显示"""
+        # 检查 UI 元素是否已创建（避免初始化时的信号触发）
+        if not hasattr(self, 'position_edit') or not hasattr(self, 'stock_table'):
             return
+        
+        self.stock_table.setRowCount(0)
         if self.adc_controller and lot_number:
             adc = self.adc_controller.get_adc_by_lot_number(lot_number)
             if adc:
                 self.position_edit.setText(adc.storage_position)
+                # 更新库存显示
+                if adc.specs:
+                    self.stock_table.setRowCount(len(adc.specs))
+                    for row, spec in enumerate(adc.specs):
+                        spec_mg = spec.spec_mg if isinstance(spec, ADCSpec) else spec.get('spec_mg', 0)
+                        quantity = spec.quantity if isinstance(spec, ADCSpec) else spec.get('quantity', 0)
+                        total = spec_mg * quantity
+                        
+                        self.stock_table.setItem(row, 0, QTableWidgetItem(f"{spec_mg}"))
+                        self.stock_table.setItem(row, 1, QTableWidgetItem(f"{quantity}"))
+                        self.stock_table.setItem(row, 2, QTableWidgetItem(f"{total:.2f}"))
+        
+        # 动态调整表格高度：显示所有行但不超过最大高度
+        row_count = self.stock_table.rowCount()
+        row_height = 30  # 每行高度
+        header_height = 30  # 表头高度
+        max_height = 180  # 最大高度
+        min_height = 60  # 最小高度
+        
+        if row_count > 0:
+            calculated_height = header_height + row_count * row_height + 5
+            table_height = min(max(calculated_height, min_height), max_height)
+        else:
+            table_height = min_height
+        
+        self.stock_table.setFixedHeight(table_height)
     
     def _on_operator_changed(self, text: str):
         """入库人变更时，自动填充Owner"""
@@ -1491,7 +1639,7 @@ class ADCInboundDialog(QDialog):
             operator=self.operator_edit.text().strip(),
             owner=self.owner_edit.text().strip() or self.operator_edit.text().strip(),
             storage_position=self.position_edit.text().strip(),
-            storage_date=datetime.strptime(self.date_edit.date().toString("yyyy-MM-dd"), "%Y-%m-%d"),
+            storage_date=datetime.now(),  # 使用当前时间
             notes=self.notes_edit.text().strip(),
             items=[ADCMovementItem(spec_mg=i['spec_mg'], quantity=i['quantity']) for i in self.items]
         )
@@ -1509,12 +1657,8 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 1400, 900)
         
         # 初始化数据库和控制器
-        from database import DatabaseManager
         self.db_manager = DatabaseManager()
-        self.material_controller = MaterialController(self.db_manager)
-        self.order_controller = OrderController(self.db_manager, self.material_controller)
-        self.report_controller = ReportController(self.db_manager)
-        self.adc_controller = ADCController(self.db_manager)
+        self._init_controllers()
         
         # 物料相关缓存
         self.material_cards = {}
@@ -1529,6 +1673,13 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self.refresh_data()
     
+    def _init_controllers(self):
+        """初始化所有控制器"""
+        self.material_controller = MaterialController(self.db_manager)
+        self.order_controller = OrderController(self.db_manager, self.material_controller)
+        self.report_controller = ReportController(self.db_manager)
+        self.adc_controller = ADCController(self.db_manager)
+    
     def setup_ui(self):
         """设置用户界面"""
         # 创建中心部件
@@ -1538,19 +1689,37 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout()
         central_widget.setLayout(main_layout)
         
+        # 数据库选择工具栏
+        db_toolbar = QHBoxLayout()
+        db_toolbar.addWidget(QLabel("当前数据库:"))
+        
+        self.db_combo = QComboBox()
+        self.db_combo.setMinimumWidth(200)
+        self._refresh_db_combo()
+        self.db_combo.currentIndexChanged.connect(self._on_db_changed)
+        db_toolbar.addWidget(self.db_combo)
+        
+        add_db_btn = QPushButton("添加")
+        add_db_btn.clicked.connect(self._add_database)
+        db_toolbar.addWidget(add_db_btn)
+        
+        remove_db_btn = QPushButton("移除")
+        remove_db_btn.clicked.connect(self._remove_database)
+        db_toolbar.addWidget(remove_db_btn)
+        
+        db_toolbar.addStretch()
+        
+        # 显示当前数据库路径
+        self.db_path_label = QLabel()
+        self.db_path_label.setStyleSheet("color: #666; font-size: 11px;")
+        self._update_db_path_label()
+        db_toolbar.addWidget(self.db_path_label)
+        
+        main_layout.addLayout(db_toolbar)
+        
         # 创建标签页
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
-        
-        # 物料管理标签页
-        material_tab = QWidget()
-        self.setup_material_tab(material_tab)
-        self.tabs.addTab(material_tab, "物料管理")
-        
-        # 订单管理标签页
-        order_tab = QWidget()
-        self.setup_order_tab(order_tab)
-        self.tabs.addTab(order_tab, "订单管理")
         
         # ADC管理标签页
         adc_tab = QWidget()
@@ -1561,11 +1730,6 @@ class MainWindow(QMainWindow):
         adc_movement_tab = QWidget()
         self.setup_adc_movement_tab(adc_movement_tab)
         self.tabs.addTab(adc_movement_tab, "ADC出入库")
-        
-        # 报告生成标签页
-        report_tab = QWidget()
-        self.setup_report_tab(report_tab)
-        self.tabs.addTab(report_tab, "报告生成")
         
         # 状态栏
         self.statusBar().showMessage("就绪 - 支持多用户并发访问")
@@ -1711,10 +1875,31 @@ class MainWindow(QMainWindow):
         refresh_btn.clicked.connect(self.refresh_adcs)
         toolbar.addWidget(refresh_btn)
         
-        toolbar.addWidget(QLabel("搜索SampleID:"))
+        export_csv_btn = QPushButton("导出CSV")
+        export_csv_btn.clicked.connect(self.export_adc_to_csv)
+        toolbar.addWidget(export_csv_btn)
+        
+        export_excel_btn = QPushButton("导出Excel")
+        export_excel_btn.clicked.connect(self.export_adc_to_excel)
+        toolbar.addWidget(export_excel_btn)
+        
+        toolbar.addWidget(QLabel("SampleID:"))
         self.adc_search_edit = QLineEdit()
+        self.adc_search_edit.setPlaceholderText("搜索SampleID")
         self.adc_search_edit.textChanged.connect(self.search_adcs)
         toolbar.addWidget(self.adc_search_edit)
+        
+        toolbar.addWidget(QLabel("Antibody:"))
+        self.adc_antibody_search_edit = QLineEdit()
+        self.adc_antibody_search_edit.setPlaceholderText("搜索Antibody")
+        self.adc_antibody_search_edit.textChanged.connect(self.search_adcs)
+        toolbar.addWidget(self.adc_antibody_search_edit)
+        
+        toolbar.addWidget(QLabel("Linker-payload:"))
+        self.adc_linker_search_edit = QLineEdit()
+        self.adc_linker_search_edit.setPlaceholderText("搜索Linker-payload")
+        self.adc_linker_search_edit.textChanged.connect(self.search_adcs)
+        toolbar.addWidget(self.adc_linker_search_edit)
         
         toolbar.addStretch()
         layout.addLayout(toolbar)
@@ -1779,7 +1964,14 @@ class MainWindow(QMainWindow):
         toolbar.addStretch()
         layout.addLayout(toolbar)
         
-        # 出入库记录表格
+        # 使用分割器分割左右区域
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # 左侧：出入库记录表格
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+        left_widget.setLayout(left_layout)
+        
         self.movement_table = QTableWidget()
         self.movement_table.setColumnCount(7)
         self.movement_table.setHorizontalHeaderLabels([
@@ -1788,7 +1980,245 @@ class MainWindow(QMainWindow):
         self.movement_table.horizontalHeader().setStretchLastSection(True)
         self.movement_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.movement_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        layout.addWidget(self.movement_table)
+        self.movement_table.itemSelectionChanged.connect(self._on_movement_selected)
+        left_layout.addWidget(self.movement_table)
+        
+        splitter.addWidget(left_widget)
+        
+        # 右侧：详情面板
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+        right_widget.setLayout(right_layout)
+        
+        # 右侧最上方：选中记录详情
+        detail_group = QGroupBox("选中记录详情")
+        detail_layout = QVBoxLayout()
+        
+        self.movement_lot_label = QLabel("请选择一条记录")
+        self.movement_lot_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #007bff;")
+        detail_layout.addWidget(self.movement_lot_label)
+        
+        self.movement_detail_label = QLabel("")
+        self.movement_detail_label.setWordWrap(True)
+        self.movement_detail_label.setStyleSheet("background-color: #f8f9fa; padding: 10px; border-radius: 5px;")
+        detail_layout.addWidget(self.movement_detail_label)
+        
+        detail_group.setLayout(detail_layout)
+        right_layout.addWidget(detail_group)
+        
+        # 右侧中间：该LotNumber的出入库历史
+        history_group = QGroupBox("出入库历史")
+        history_layout = QVBoxLayout()
+        
+        self.movement_history_table = QTableWidget()
+        self.movement_history_table.setColumnCount(5)
+        self.movement_history_table.setHorizontalHeaderLabels([
+            "类型", "操作人", "日期", "明细", "合计(mg)"
+        ])
+        self.movement_history_table.horizontalHeader().setStretchLastSection(True)
+        self.movement_history_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.movement_history_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        history_layout.addWidget(self.movement_history_table)
+        
+        history_group.setLayout(history_layout)
+        right_layout.addWidget(history_group)
+        
+        # 右侧下方：该LotNumber的当前库存
+        stock_group = QGroupBox("当前库存")
+        stock_layout = QVBoxLayout()
+        
+        self.movement_stock_table = QTableWidget()
+        self.movement_stock_table.setColumnCount(3)
+        self.movement_stock_table.setHorizontalHeaderLabels([
+            "规格 (mg)", "数量 (小管)", "小计 (mg)"
+        ])
+        self.movement_stock_table.horizontalHeader().setStretchLastSection(True)
+        self.movement_stock_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.movement_stock_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        stock_layout.addWidget(self.movement_stock_table)
+        
+        self.movement_stock_total_label = QLabel("汇总: 0 小管 / 0.00 mg")
+        self.movement_stock_total_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #28a745;")
+        stock_layout.addWidget(self.movement_stock_total_label)
+        
+        stock_group.setLayout(stock_layout)
+        right_layout.addWidget(stock_group)
+        
+        splitter.addWidget(right_widget)
+        
+        # 设置分割比例
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+        
+        layout.addWidget(splitter)
+    
+    def _on_movement_selected(self):
+        """出入库记录选中事件处理"""
+        current_row = self.movement_table.currentRow()
+        if current_row < 0:
+            return
+        
+        # 获取选中行的LotNumber
+        lot_number_item = self.movement_table.item(current_row, 1)
+        if not lot_number_item:
+            return
+        
+        lot_number = lot_number_item.text()
+        self.movement_lot_label.setText(f"Lot Number: {lot_number}")
+        
+        # 更新选中记录详情
+        self._update_movement_detail(current_row)
+        
+        # 更新出入库历史
+        self._update_movement_history(lot_number)
+        
+        # 更新当前库存
+        self._update_movement_stock(lot_number)
+    
+    def _update_movement_detail(self, row: int):
+        """更新选中记录的详细信息"""
+        if not hasattr(self, '_current_movements') or row >= len(self._current_movements):
+            self.movement_detail_label.setText("")
+            return
+        
+        movement = self._current_movements[row]
+        record = movement['record']
+        
+        # 构建详情文本
+        details = []
+        
+        if movement['type'] == 'outbound':
+            # 出库记录详情
+            details.append(f"<b>类型:</b> 出库")
+            details.append(f"<b>需求人:</b> {record.requester}")
+            details.append(f"<b>出库人:</b> {record.operator}")
+            details.append(f"<b>寄送地址:</b> {record.shipping_address or '-'}")
+            if record.shipping_date:
+                if isinstance(record.shipping_date, datetime):
+                    date_str = record.shipping_date.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    date_str = str(record.shipping_date)
+                details.append(f"<b>寄送日期:</b> {date_str}")
+            if record.notes:
+                details.append(f"<b>备注:</b> {record.notes}")
+        else:
+            # 入库记录详情
+            details.append(f"<b>类型:</b> 入库")
+            details.append(f"<b>入库人:</b> {record.operator}")
+            details.append(f"<b>Owner:</b> {record.owner or '-'}")
+            details.append(f"<b>存放地址:</b> {record.storage_position or '-'}")
+            if record.storage_date:
+                if isinstance(record.storage_date, datetime):
+                    date_str = record.storage_date.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    date_str = str(record.storage_date)
+                details.append(f"<b>存放日期:</b> {date_str}")
+            if record.notes:
+                details.append(f"<b>备注:</b> {record.notes}")
+        
+        # 明细信息
+        items = movement['items']
+        items_str = ", ".join([
+            f"{item.spec_mg}mg×{item.quantity}" if isinstance(item, ADCMovementItem) 
+            else f"{item.get('spec_mg', 0)}mg×{item.get('quantity', 0)}"
+            for item in items
+        ])
+        details.append(f"<b>明细:</b> {items_str}")
+        
+        # 合计
+        total_mg = sum([
+            item.spec_mg * item.quantity if isinstance(item, ADCMovementItem)
+            else item.get('spec_mg', 0) * item.get('quantity', 0)
+            for item in items
+        ])
+        total_vials = sum([
+            item.quantity if isinstance(item, ADCMovementItem)
+            else item.get('quantity', 0)
+            for item in items
+        ])
+        details.append(f"<b>合计:</b> {total_vials} 小管 / {total_mg:.2f} mg")
+        
+        self.movement_detail_label.setText("<br>".join(details))
+    
+    def _update_movement_history(self, lot_number: str):
+        """更新出入库历史表格"""
+        movements = self.adc_controller.search_movements_by_lot_number(lot_number)
+        
+        self.movement_history_table.setRowCount(len(movements))
+        
+        for row, movement in enumerate(movements):
+            # 类型
+            type_text = "入库" if movement['type'] == 'inbound' else "出库"
+            type_item = QTableWidgetItem(type_text)
+            if movement['type'] == 'inbound':
+                type_item.setBackground(QColor("#d4edda"))
+            else:
+                type_item.setBackground(QColor("#f8d7da"))
+            self.movement_history_table.setItem(row, 0, type_item)
+            
+            # 操作人
+            self.movement_history_table.setItem(row, 1, QTableWidgetItem(movement['operator']))
+            
+            # 日期
+            date_str = ""
+            if movement['date']:
+                if isinstance(movement['date'], datetime):
+                    date_str = movement['date'].strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(movement['date'], str):
+                    try:
+                        dt = datetime.strptime(movement['date'], '%Y-%m-%d %H:%M:%S.%f')
+                        date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        date_str = str(movement['date'])
+                else:
+                    date_str = str(movement['date'])
+            self.movement_history_table.setItem(row, 2, QTableWidgetItem(date_str))
+            
+            # 明细
+            items = movement['items']
+            items_str = ", ".join([
+                f"{item.spec_mg}mg×{item.quantity}" if isinstance(item, ADCMovementItem) 
+                else f"{item.get('spec_mg', 0)}mg×{item.get('quantity', 0)}"
+                for item in items
+            ])
+            self.movement_history_table.setItem(row, 3, QTableWidgetItem(items_str))
+            
+            # 合计
+            total_mg = sum([
+                item.spec_mg * item.quantity if isinstance(item, ADCMovementItem)
+                else item.get('spec_mg', 0) * item.get('quantity', 0)
+                for item in items
+            ])
+            self.movement_history_table.setItem(row, 4, QTableWidgetItem(f"{total_mg:.2f}"))
+    
+    def _update_movement_stock(self, lot_number: str):
+        """更新当前库存表格"""
+        adc = self.adc_controller.get_adc_by_lot_number(lot_number)
+        
+        if not adc:
+            self.movement_stock_table.setRowCount(0)
+            self.movement_stock_total_label.setText("汇总: 0 小管 / 0.00 mg")
+            return
+        
+        specs = adc.specs if adc.specs else []
+        self.movement_stock_table.setRowCount(len(specs))
+        
+        total_vials = 0
+        total_mg = 0.0
+        
+        for row, spec in enumerate(specs):
+            spec_mg = spec.spec_mg if isinstance(spec, ADCSpec) else spec.get('spec_mg', 0)
+            quantity = spec.quantity if isinstance(spec, ADCSpec) else spec.get('quantity', 0)
+            subtotal = spec_mg * quantity
+            
+            total_vials += quantity
+            total_mg += subtotal
+            
+            self.movement_stock_table.setItem(row, 0, QTableWidgetItem(f"{spec_mg}"))
+            self.movement_stock_table.setItem(row, 1, QTableWidgetItem(f"{quantity}"))
+            self.movement_stock_table.setItem(row, 2, QTableWidgetItem(f"{subtotal:.2f}"))
+        
+        self.movement_stock_total_label.setText(f"汇总: {total_vials} 小管 / {total_mg:.2f} mg")
     
     def setup_report_tab(self, parent):
         """设置报告生成标签页"""
@@ -1818,13 +2248,127 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(btn_layout)
     
+    # ==================== 数据库切换相关方法 ====================
+    
+    def _refresh_db_combo(self):
+        """刷新数据库下拉菜单"""
+        self.db_combo.blockSignals(True)
+        self.db_combo.clear()
+        
+        databases = get_database_list()
+        config = load_config()
+        current_idx = config.get("current_database", 0)
+        
+        for db in databases:
+            self.db_combo.addItem(db.get("name", "未命名"))
+        
+        if 0 <= current_idx < len(databases):
+            self.db_combo.setCurrentIndex(current_idx)
+        
+        self.db_combo.blockSignals(False)
+    
+    def _update_db_path_label(self):
+        """更新数据库路径标签"""
+        self.db_path_label.setText(f"路径: {self.db_manager.db_path}")
+    
+    def _on_db_changed(self, index: int):
+        """数据库选择变更事件"""
+        if index < 0:
+            return
+        
+        databases = get_database_list()
+        if index >= len(databases):
+            return
+        
+        db_path = databases[index].get("path", "inventory.db")
+        
+        # 保存选择
+        set_current_database(index)
+        
+        # 切换数据库
+        self.db_manager.switch_database(db_path)
+        
+        # 重新初始化控制器
+        self._init_controllers()
+        
+        # 清空缓存
+        self.material_cards.clear()
+        self.detail_panels.clear()
+        self.selected_material_id = None
+        self.adc_cards.clear()
+        self.adc_detail_panels.clear()
+        self.selected_adc_id = None
+        
+        # 更新路径标签
+        self._update_db_path_label()
+        
+        # 刷新数据
+        self.refresh_data()
+        
+        QMessageBox.information(self, "提示", f"已切换到数据库: {databases[index].get('name', '未命名')}")
+    
+    def _add_database(self):
+        """添加数据库"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择数据库文件",
+            "",
+            "SQLite Database (*.db);;All Files (*)"
+        )
+        
+        if not file_path:
+            return
+        
+        # 获取数据库名称
+        from PyQt5.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(
+            self,
+            "数据库名称",
+            "请输入数据库显示名称:",
+            text=os.path.basename(file_path).replace('.db', '')
+        )
+        
+        if not ok or not name:
+            return
+        
+        if add_database(name, file_path):
+            self._refresh_db_combo()
+            # 自动切换到新添加的数据库
+            new_index = len(get_database_list()) - 1
+            self.db_combo.setCurrentIndex(new_index)
+            QMessageBox.information(self, "成功", f"已添加并切换到数据库: {name}")
+        else:
+            QMessageBox.warning(self, "警告", "该数据库已存在于列表中")
+    
+    def _remove_database(self):
+        """移除数据库"""
+        current_idx = self.db_combo.currentIndex()
+        databases = get_database_list()
+        
+        if len(databases) <= 1:
+            QMessageBox.warning(self, "警告", "至少需要保留一个数据库")
+            return
+        
+        db_name = databases[current_idx].get("name", "未命名")
+        
+        reply = QMessageBox.question(
+            self,
+            "确认移除",
+            f"确定要从列表中移除数据库 '{db_name}' 吗？\n（不会删除数据库文件）",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if remove_database(current_idx):
+                self._refresh_db_combo()
+                # 如果移除的是当前数据库，需要切换到其他数据库
+                self._on_db_changed(self.db_combo.currentIndex())
+                QMessageBox.information(self, "成功", f"已移除数据库: {db_name}")
+    
     def refresh_data(self):
         """刷新所有数据"""
-        self.refresh_materials()
-        self.refresh_orders()
         self.refresh_adcs()
         self.refresh_adc_movements()
-        self.refresh_report_orders()
     
     # ==================== 物料相关方法 ====================
     
@@ -2277,14 +2821,274 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "错误", f"删除失败: {str(e)}")
     
     def search_adcs(self):
-        """搜索ADC"""
-        keyword = self.adc_search_edit.text()
-        if keyword:
-            adcs = self.adc_controller.search_by_sample_id(keyword)
-        else:
-            adcs = self.adc_controller.get_all_adcs()
+        """搜索ADC（支持多条件组合搜索）"""
+        sample_id = self.adc_search_edit.text().strip()
+        antibody = self.adc_antibody_search_edit.text().strip()
+        linker_payload = self.adc_linker_search_edit.text().strip()
+        
+        # 获取所有ADC
+        adcs = self.adc_controller.get_all_adcs()
+        
+        # 按条件过滤
+        if sample_id:
+            sample_id_lower = sample_id.lower()
+            adcs = [adc for adc in adcs if sample_id_lower in adc.sample_id.lower()]
+        
+        if antibody:
+            antibody_lower = antibody.lower()
+            adcs = [adc for adc in adcs if antibody_lower in adc.antibody.lower()]
+        
+        if linker_payload:
+            linker_lower = linker_payload.lower()
+            adcs = [adc for adc in adcs if linker_lower in adc.linker_payload.lower()]
         
         self.update_adc_cards(adcs)
+    
+    def export_adc_to_csv(self):
+        """导出ADC库存到CSV文件"""
+        import csv
+        
+        # 获取所有ADC数据
+        adcs = self.adc_controller.get_all_adcs()
+        
+        if not adcs:
+            QMessageBox.warning(self, "警告", "没有可导出的ADC数据")
+            return
+        
+        # 选择保存路径
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出ADC库存",
+            "adc_inventory.csv",
+            "CSV Files (*.csv)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                
+                # 写入表头
+                writer.writerow([
+                    'Lot Number', 'Sample ID', 'Description', 'Concentration (mg/mL)',
+                    'Owner', 'Storage Temp', 'Storage Position', '入库时间',
+                    '规格 (mg)', '数量 (小管)', '小计 (mg)'
+                ])
+                
+                # 写入数据
+                for adc in adcs:
+                    # 入库时间格式化
+                    created_at_str = ""
+                    if adc.created_at:
+                        if isinstance(adc.created_at, datetime):
+                            created_at_str = adc.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            created_at_str = str(adc.created_at)
+                    
+                    # 每个规格一行
+                    if adc.specs:
+                        for spec in adc.specs:
+                            spec_mg = spec.spec_mg if isinstance(spec, ADCSpec) else spec.get('spec_mg', 0)
+                            quantity = spec.quantity if isinstance(spec, ADCSpec) else spec.get('quantity', 0)
+                            subtotal = spec_mg * quantity
+                            
+                            writer.writerow([
+                                adc.lot_number,
+                                adc.sample_id,
+                                adc.description,
+                                adc.concentration,
+                                adc.owner,
+                                adc.storage_temp,
+                                adc.storage_position,
+                                created_at_str,
+                                spec_mg,
+                                quantity,
+                                f"{subtotal:.2f}"
+                            ])
+                    else:
+                        # 没有规格的ADC也导出一行
+                        writer.writerow([
+                            adc.lot_number,
+                            adc.sample_id,
+                            adc.description,
+                            adc.concentration,
+                            adc.owner,
+                            adc.storage_temp,
+                            adc.storage_position,
+                            created_at_str,
+                            '',
+                            '',
+                            ''
+                        ])
+            
+            QMessageBox.information(self, "成功", f"已成功导出到: {file_path}")
+        
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"导出失败: {str(e)}")
+    
+    def export_adc_to_excel(self):
+        """导出ADC库存到Excel文件"""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            QMessageBox.critical(self, "错误", "请先安装openpyxl库: pip install openpyxl")
+            return
+        
+        # 获取所有ADC数据
+        adcs = self.adc_controller.get_all_adcs()
+        
+        if not adcs:
+            QMessageBox.warning(self, "警告", "没有可导出的ADC数据")
+            return
+        
+        # 选择保存路径
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出ADC库存",
+            "adc_inventory.xlsx",
+            "Excel Files (*.xlsx)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "ADC库存"
+            
+            # 定义样式
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            
+            thin_border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            
+            # 交替行颜色
+            color1 = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+            color2 = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
+            
+            # 表头
+            headers = [
+                'Lot Number', 'Sample ID', 'Description', 'Concentration (mg/mL)',
+                'Owner', 'Storage Temp', 'Storage Position', '入库时间',
+                '规格 (mg)', '数量 (小管)', '小计 (mg)', 'ADC汇总 (mg)'
+            ]
+            
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_alignment
+                cell.border = thin_border
+            
+            # 设置列宽
+            column_widths = [18, 15, 25, 18, 12, 14, 18, 20, 12, 14, 14, 16]
+            for col, width in enumerate(column_widths, 1):
+                ws.column_dimensions[get_column_letter(col)].width = width
+            
+            # 写入数据
+            current_row = 2
+            for adc_index, adc in enumerate(adcs):
+                # 入库时间格式化
+                created_at_str = ""
+                if adc.created_at:
+                    if isinstance(adc.created_at, datetime):
+                        created_at_str = adc.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        created_at_str = str(adc.created_at)
+                
+                # 计算该ADC的总毫克数
+                total_mg = adc.get_total_mg()
+                
+                # 选择背景色（交替）
+                row_fill = color1 if adc_index % 2 == 0 else color2
+                
+                # 获取规格列表
+                specs = adc.specs if adc.specs else []
+                spec_count = max(len(specs), 1)  # 至少1行
+                
+                start_row = current_row
+                
+                if specs:
+                    for spec_index, spec in enumerate(specs):
+                        spec_mg = spec.spec_mg if isinstance(spec, ADCSpec) else spec.get('spec_mg', 0)
+                        quantity = spec.quantity if isinstance(spec, ADCSpec) else spec.get('quantity', 0)
+                        subtotal = spec_mg * quantity
+                        
+                        row = current_row + spec_index
+                        
+                        # 只在第一行写入ADC基本信息
+                        if spec_index == 0:
+                            ws.cell(row=row, column=1, value=adc.lot_number)
+                            ws.cell(row=row, column=2, value=adc.sample_id)
+                            ws.cell(row=row, column=3, value=adc.description)
+                            ws.cell(row=row, column=4, value=adc.concentration)
+                            ws.cell(row=row, column=5, value=adc.owner)
+                            ws.cell(row=row, column=6, value=adc.storage_temp)
+                            ws.cell(row=row, column=7, value=adc.storage_position)
+                            ws.cell(row=row, column=8, value=created_at_str)
+                            ws.cell(row=row, column=12, value=total_mg)
+                        
+                        # 规格数据
+                        ws.cell(row=row, column=9, value=spec_mg)
+                        ws.cell(row=row, column=10, value=quantity)
+                        ws.cell(row=row, column=11, value=subtotal)
+                        
+                        # 应用样式
+                        for col in range(1, 13):
+                            cell = ws.cell(row=row, column=col)
+                            cell.fill = row_fill
+                            cell.border = thin_border
+                            if col in [4, 9, 10, 11, 12]:
+                                cell.alignment = Alignment(horizontal="right")
+                else:
+                    # 没有规格的ADC
+                    row = current_row
+                    ws.cell(row=row, column=1, value=adc.lot_number)
+                    ws.cell(row=row, column=2, value=adc.sample_id)
+                    ws.cell(row=row, column=3, value=adc.description)
+                    ws.cell(row=row, column=4, value=adc.concentration)
+                    ws.cell(row=row, column=5, value=adc.owner)
+                    ws.cell(row=row, column=6, value=adc.storage_temp)
+                    ws.cell(row=row, column=7, value=adc.storage_position)
+                    ws.cell(row=row, column=8, value=created_at_str)
+                    ws.cell(row=row, column=12, value=0)
+                    
+                    for col in range(1, 13):
+                        cell = ws.cell(row=row, column=col)
+                        cell.fill = row_fill
+                        cell.border = thin_border
+                
+                # 合并单元格（如果有多个规格）
+                if spec_count > 1:
+                    end_row = start_row + spec_count - 1
+                    for col in [1, 2, 3, 4, 5, 6, 7, 8, 12]:
+                        ws.merge_cells(start_row=start_row, start_column=col, end_row=end_row, end_column=col)
+                        # 设置合并后的对齐方式
+                        ws.cell(row=start_row, column=col).alignment = Alignment(horizontal="center" if col != 3 else "left", vertical="center", wrap_text=True)
+                
+                current_row += spec_count
+            
+            # 冻结首行
+            ws.freeze_panes = 'A2'
+            
+            # 保存文件
+            wb.save(file_path)
+            
+            QMessageBox.information(self, "成功", f"已成功导出到: {file_path}")
+        
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"导出失败: {str(e)}")
     
     # ==================== ADC出入库相关方法 ====================
     
@@ -2295,6 +3099,8 @@ class MainWindow(QMainWindow):
     
     def _update_movement_table(self, movements: List[Dict]):
         """更新出入库记录表格"""
+        # 保存movements列表以便选中时获取详细信息
+        self._current_movements = movements
         self.movement_table.setRowCount(len(movements))
         
         for row, movement in enumerate(movements):
@@ -2313,11 +3119,18 @@ class MainWindow(QMainWindow):
             # 操作人
             self.movement_table.setItem(row, 2, QTableWidgetItem(movement['operator']))
             
-            # 日期
+            # 日期（精确到秒）
             date_str = ""
             if movement['date']:
                 if isinstance(movement['date'], datetime):
-                    date_str = movement['date'].strftime('%Y-%m-%d')
+                    date_str = movement['date'].strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(movement['date'], str):
+                    # 尝试解析字符串格式的日期
+                    try:
+                        dt = datetime.strptime(movement['date'], '%Y-%m-%d %H:%M:%S.%f')
+                        date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        date_str = str(movement['date'])
                 else:
                     date_str = str(movement['date'])
             self.movement_table.setItem(row, 3, QTableWidgetItem(date_str))

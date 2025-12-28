@@ -18,10 +18,22 @@ def init_adc_tables(cursor):
             owner TEXT,
             storage_temp TEXT,
             storage_position TEXT,
+            antibody TEXT DEFAULT '',
+            linker_payload TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # 为现有表添加新列（如果不存在）
+    try:
+        cursor.execute('ALTER TABLE adc ADD COLUMN antibody TEXT DEFAULT ""')
+    except:
+        pass  # 列已存在
+    try:
+        cursor.execute('ALTER TABLE adc ADD COLUMN linker_payload TEXT DEFAULT ""')
+    except:
+        pass  # 列已存在
     
     # 创建ADC规格库存表
     cursor.execute('''
@@ -50,7 +62,7 @@ def init_adc_tables(cursor):
             requester TEXT NOT NULL,
             operator TEXT NOT NULL,
             shipping_address TEXT,
-            shipping_date DATE,
+            shipping_date TIMESTAMP,
             notes TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -75,7 +87,7 @@ def init_adc_tables(cursor):
             operator TEXT NOT NULL,
             owner TEXT,
             storage_position TEXT,
-            storage_date DATE,
+            storage_date TIMESTAMP,
             notes TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -111,16 +123,17 @@ class ADCRepository:
     
     def create_adc(self, lot_number: str, sample_id: str, description: str = "",
                    concentration: float = 0.0, owner: str = "", 
-                   storage_temp: str = "", storage_position: str = "") -> int:
+                   storage_temp: str = "", storage_position: str = "",
+                   antibody: str = "", linker_payload: str = "") -> int:
         """创建ADC记录"""
         query = '''
             INSERT INTO adc (lot_number, sample_id, description, concentration, 
-                           owner, storage_temp, storage_position)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                           owner, storage_temp, storage_position, antibody, linker_payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         return self.db.execute_insert(query, (
             lot_number, sample_id, description, concentration,
-            owner, storage_temp, storage_position
+            owner, storage_temp, storage_position, antibody, linker_payload
         ))
     
     def get_adc_by_id(self, adc_id: int) -> Optional[Dict[str, Any]]:
@@ -147,19 +160,31 @@ class ADCRepository:
     
     def update_adc(self, adc_id: int, lot_number: str, sample_id: str, 
                    description: str, concentration: float, owner: str,
-                   storage_temp: str, storage_position: str) -> bool:
+                   storage_temp: str, storage_position: str,
+                   antibody: str = "", linker_payload: str = "") -> bool:
         """更新ADC记录"""
         query = '''
             UPDATE adc 
             SET lot_number=?, sample_id=?, description=?, concentration=?,
-                owner=?, storage_temp=?, storage_position=?, updated_at=CURRENT_TIMESTAMP
+                owner=?, storage_temp=?, storage_position=?, antibody=?, linker_payload=?,
+                updated_at=CURRENT_TIMESTAMP
             WHERE id=?
         '''
         affected = self.db.execute_update(query, (
             lot_number, sample_id, description, concentration,
-            owner, storage_temp, storage_position, adc_id
+            owner, storage_temp, storage_position, antibody, linker_payload, adc_id
         ))
         return affected > 0
+    
+    def search_by_antibody(self, antibody: str) -> List[Dict[str, Any]]:
+        """根据Antibody搜索ADC"""
+        query = "SELECT * FROM adc WHERE antibody LIKE ? ORDER BY created_at DESC"
+        return self.db.execute_query(query, (f"%{antibody}%",))
+    
+    def search_by_linker_payload(self, linker_payload: str) -> List[Dict[str, Any]]:
+        """根据Linker-payload搜索ADC"""
+        query = "SELECT * FROM adc WHERE linker_payload LIKE ? ORDER BY created_at DESC"
+        return self.db.execute_query(query, (f"%{linker_payload}%",))
     
     def delete_adc(self, adc_id: int) -> bool:
         """删除ADC记录（会级联删除相关规格）"""

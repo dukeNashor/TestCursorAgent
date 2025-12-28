@@ -49,6 +49,8 @@ class ADC:
     owner: str = ""                # Owner
     storage_temp: str = ""         # Storage Temp
     storage_position: str = ""     # Storage Position
+    antibody: str = ""             # Antibody
+    linker_payload: str = ""       # Linker-payload
     created_at: Optional[datetime] = None   # 入库时间
     updated_at: Optional[datetime] = None   # 更新时间
     specs: List[ADCSpec] = field(default_factory=list)  # 规格列表
@@ -78,7 +80,8 @@ class ADC:
         # 只保留ADC类定义的字段
         adc_fields = {
             'id', 'lot_number', 'sample_id', 'description', 'concentration',
-            'owner', 'storage_temp', 'storage_position', 'created_at', 'updated_at', 'specs'
+            'owner', 'storage_temp', 'storage_position', 'antibody', 'linker_payload',
+            'created_at', 'updated_at', 'specs'
         }
         filtered_data = {k: v for k, v in data.items() if k in adc_fields}
         

@@ -59,7 +59,9 @@ class ADCController:
             concentration=adc.concentration,
             owner=adc.owner,
             storage_temp=adc.storage_temp,
-            storage_position=adc.storage_position
+            storage_position=adc.storage_position,
+            antibody=adc.antibody,
+            linker_payload=adc.linker_payload
         )
         
         # 添加规格
@@ -103,6 +105,26 @@ class ADCController:
                 results.append(adc)
         return results
     
+    def search_by_antibody(self, antibody: str) -> List[ADC]:
+        """根据Antibody搜索ADC（从缓存，模糊匹配）"""
+        self._init_cache()
+        antibody_lower = antibody.lower()
+        results = []
+        for adc in self._all_adcs_cache:
+            if antibody_lower in adc.antibody.lower():
+                results.append(adc)
+        return results
+    
+    def search_by_linker_payload(self, linker_payload: str) -> List[ADC]:
+        """根据Linker-payload搜索ADC（从缓存，模糊匹配）"""
+        self._init_cache()
+        linker_payload_lower = linker_payload.lower()
+        results = []
+        for adc in self._all_adcs_cache:
+            if linker_payload_lower in adc.linker_payload.lower():
+                results.append(adc)
+        return results
+    
     def update_adc(self, adc: ADC) -> tuple:
         """更新ADC，返回(成功状态, 错误信息)"""
         if not adc.id:
@@ -127,7 +149,9 @@ class ADCController:
             concentration=adc.concentration,
             owner=adc.owner,
             storage_temp=adc.storage_temp,
-            storage_position=adc.storage_position
+            storage_position=adc.storage_position,
+            antibody=adc.antibody,
+            linker_payload=adc.linker_payload
         )
         
         if not success:
@@ -237,14 +261,8 @@ class ADCController:
             if current_qty < quantity:
                 return False, f"规格 {spec_mg}mg 库存不足，当前库存 {current_qty}，需要 {quantity}"
         
-        # 创建出库记录
-        shipping_date_str = ""
-        if outbound.shipping_date:
-            from datetime import datetime
-            if isinstance(outbound.shipping_date, datetime):
-                shipping_date_str = outbound.shipping_date.strftime('%Y-%m-%d')
-            else:
-                shipping_date_str = str(outbound.shipping_date)
+        # 创建出库记录（使用当前时间作为精确时间戳）
+        shipping_date_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         
         outbound_id = self.repository.create_outbound(
             lot_number=outbound.lot_number,
@@ -308,14 +326,8 @@ class ADCController:
         if not adc:
             return False, f"Lot Number '{inbound.lot_number}' 不存在"
         
-        # 创建入库记录
-        storage_date_str = ""
-        if inbound.storage_date:
-            from datetime import datetime
-            if isinstance(inbound.storage_date, datetime):
-                storage_date_str = inbound.storage_date.strftime('%Y-%m-%d')
-            else:
-                storage_date_str = str(inbound.storage_date)
+        # 创建入库记录（使用当前时间作为精确时间戳）
+        storage_date_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         
         inbound_id = self.repository.create_inbound(
             lot_number=inbound.lot_number,
