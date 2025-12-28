@@ -778,6 +778,7 @@ class ADCDialog(QDialog):
         self.specs_table.setHorizontalHeaderLabels(["规格 (mg)", "数量 (小管)", "小计 (mg)"])
         self.specs_table.horizontalHeader().setStretchLastSection(True)
         self.specs_table.setEditTriggers(QTableWidget.NoEditTriggers)  # 设为只读
+        self.specs_table.setSelectionBehavior(QTableWidget.SelectRows)  # 选中整行
         specs_layout.addWidget(self.specs_table)
         
         spec_btn_layout = QHBoxLayout()
@@ -1856,53 +1857,67 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         parent.setLayout(layout)
         
-        # 工具栏
-        toolbar = QHBoxLayout()
+        # 第一行工具栏：操作按钮
+        toolbar_row1 = QHBoxLayout()
         
         add_btn = QPushButton("添加ADC")
         add_btn.clicked.connect(self.add_adc)
-        toolbar.addWidget(add_btn)
+        toolbar_row1.addWidget(add_btn)
         
         edit_btn = QPushButton("编辑ADC")
         edit_btn.clicked.connect(self.edit_adc)
-        toolbar.addWidget(edit_btn)
+        toolbar_row1.addWidget(edit_btn)
         
         delete_btn = QPushButton("删除ADC")
         delete_btn.clicked.connect(self.delete_adc)
-        toolbar.addWidget(delete_btn)
+        toolbar_row1.addWidget(delete_btn)
         
         refresh_btn = QPushButton("刷新")
         refresh_btn.clicked.connect(self.refresh_adcs)
-        toolbar.addWidget(refresh_btn)
+        toolbar_row1.addWidget(refresh_btn)
         
         export_csv_btn = QPushButton("导出CSV")
         export_csv_btn.clicked.connect(self.export_adc_to_csv)
-        toolbar.addWidget(export_csv_btn)
+        toolbar_row1.addWidget(export_csv_btn)
         
         export_excel_btn = QPushButton("导出Excel")
         export_excel_btn.clicked.connect(self.export_adc_to_excel)
-        toolbar.addWidget(export_excel_btn)
+        toolbar_row1.addWidget(export_excel_btn)
         
-        toolbar.addWidget(QLabel("SampleID:"))
+        toolbar_row1.addStretch()
+        layout.addLayout(toolbar_row1)
+        
+        # 第二行工具栏：搜索框
+        toolbar_row2 = QHBoxLayout()
+        
+        toolbar_row2.addWidget(QLabel("搜索:"))
+        
+        toolbar_row2.addWidget(QLabel("LotNumber:"))
+        self.adc_lot_search_edit = QLineEdit()
+        self.adc_lot_search_edit.setPlaceholderText("搜索LotNumber")
+        self.adc_lot_search_edit.textChanged.connect(self.search_adcs)
+        toolbar_row2.addWidget(self.adc_lot_search_edit)
+        
+        toolbar_row2.addWidget(QLabel("SampleID:"))
         self.adc_search_edit = QLineEdit()
         self.adc_search_edit.setPlaceholderText("搜索SampleID")
         self.adc_search_edit.textChanged.connect(self.search_adcs)
-        toolbar.addWidget(self.adc_search_edit)
+        toolbar_row2.addWidget(self.adc_search_edit)
         
-        toolbar.addWidget(QLabel("Antibody:"))
+        toolbar_row2.addWidget(QLabel("Antibody:"))
         self.adc_antibody_search_edit = QLineEdit()
         self.adc_antibody_search_edit.setPlaceholderText("搜索Antibody")
         self.adc_antibody_search_edit.textChanged.connect(self.search_adcs)
-        toolbar.addWidget(self.adc_antibody_search_edit)
+        toolbar_row2.addWidget(self.adc_antibody_search_edit)
         
-        toolbar.addWidget(QLabel("Linker-payload:"))
+        toolbar_row2.addWidget(QLabel("Linker-payload:"))
         self.adc_linker_search_edit = QLineEdit()
         self.adc_linker_search_edit.setPlaceholderText("搜索Linker-payload")
         self.adc_linker_search_edit.textChanged.connect(self.search_adcs)
-        toolbar.addWidget(self.adc_linker_search_edit)
+        toolbar_row2.addWidget(self.adc_linker_search_edit)
         
-        toolbar.addStretch()
-        layout.addLayout(toolbar)
+        toolbar_row2.addStretch()
+        layout.addLayout(toolbar_row2)
         
         # 创建分割器
         splitter = QSplitter(Qt.Horizontal)
@@ -1939,30 +1954,79 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         parent.setLayout(layout)
         
-        # 工具栏
-        toolbar = QHBoxLayout()
+        # 第一行：操作按钮
+        toolbar_row1 = QHBoxLayout()
         
         inbound_btn = QPushButton("入库")
         inbound_btn.setStyleSheet("background-color: #28a745; color: white;")
         inbound_btn.clicked.connect(self.adc_inbound)
-        toolbar.addWidget(inbound_btn)
+        toolbar_row1.addWidget(inbound_btn)
         
         outbound_btn = QPushButton("出库")
         outbound_btn.setStyleSheet("background-color: #dc3545; color: white;")
         outbound_btn.clicked.connect(self.adc_outbound)
-        toolbar.addWidget(outbound_btn)
+        toolbar_row1.addWidget(outbound_btn)
         
         refresh_btn = QPushButton("刷新")
         refresh_btn.clicked.connect(self.refresh_adc_movements)
-        toolbar.addWidget(refresh_btn)
+        toolbar_row1.addWidget(refresh_btn)
         
-        toolbar.addWidget(QLabel("搜索LotNumber:"))
+        toolbar_row1.addStretch()
+        layout.addLayout(toolbar_row1)
+        
+        # 第二行：搜索条件
+        toolbar_row2 = QHBoxLayout()
+        
+        # 类型筛选
+        toolbar_row2.addWidget(QLabel("类型:"))
+        self.movement_type_combo = QComboBox()
+        self.movement_type_combo.addItems(["全部", "入库", "出库"])
+        self.movement_type_combo.setMinimumWidth(80)
+        self.movement_type_combo.currentIndexChanged.connect(self.search_adc_movements)
+        toolbar_row2.addWidget(self.movement_type_combo)
+        
+        # LotNumber搜索
+        toolbar_row2.addWidget(QLabel("LotNumber:"))
         self.movement_search_edit = QLineEdit()
+        self.movement_search_edit.setPlaceholderText("输入LotNumber")
         self.movement_search_edit.textChanged.connect(self.search_adc_movements)
-        toolbar.addWidget(self.movement_search_edit)
+        toolbar_row2.addWidget(self.movement_search_edit)
         
-        toolbar.addStretch()
-        layout.addLayout(toolbar)
+        # 操作人搜索
+        toolbar_row2.addWidget(QLabel("操作人:"))
+        self.movement_operator_edit = QLineEdit()
+        self.movement_operator_edit.setPlaceholderText("输入操作人")
+        self.movement_operator_edit.textChanged.connect(self.search_adc_movements)
+        toolbar_row2.addWidget(self.movement_operator_edit)
+        
+        # 日期范围筛选
+        toolbar_row2.addWidget(QLabel("日期从:"))
+        self.movement_date_from = QDateEdit()
+        self.movement_date_from.setCalendarPopup(True)
+        self.movement_date_from.setDisplayFormat("yyyy-MM-dd")
+        self.movement_date_from.setSpecialValueText("不限")
+        self.movement_date_from.setMinimumDate(QDate(2000, 1, 1))
+        self.movement_date_from.setDate(QDate(2000, 1, 1))  # 设为最小值表示不限
+        self.movement_date_from.dateChanged.connect(self.search_adc_movements)
+        toolbar_row2.addWidget(self.movement_date_from)
+        
+        toolbar_row2.addWidget(QLabel("到:"))
+        self.movement_date_to = QDateEdit()
+        self.movement_date_to.setCalendarPopup(True)
+        self.movement_date_to.setDisplayFormat("yyyy-MM-dd")
+        self.movement_date_to.setSpecialValueText("不限")
+        self.movement_date_to.setMinimumDate(QDate(2000, 1, 1))
+        self.movement_date_to.setDate(QDate(2099, 12, 31))  # 设为未来日期表示不限
+        self.movement_date_to.dateChanged.connect(self.search_adc_movements)
+        toolbar_row2.addWidget(self.movement_date_to)
+        
+        # 清除搜索条件按钮
+        clear_search_btn = QPushButton("清除筛选")
+        clear_search_btn.clicked.connect(self.clear_movement_search)
+        toolbar_row2.addWidget(clear_search_btn)
+        
+        toolbar_row2.addStretch()
+        layout.addLayout(toolbar_row2)
         
         # 使用分割器分割左右区域
         splitter = QSplitter(Qt.Horizontal)
@@ -2822,6 +2886,7 @@ class MainWindow(QMainWindow):
     
     def search_adcs(self):
         """搜索ADC（支持多条件组合搜索）"""
+        lot_number = self.adc_lot_search_edit.text().strip()
         sample_id = self.adc_search_edit.text().strip()
         antibody = self.adc_antibody_search_edit.text().strip()
         linker_payload = self.adc_linker_search_edit.text().strip()
@@ -2830,6 +2895,10 @@ class MainWindow(QMainWindow):
         adcs = self.adc_controller.get_all_adcs()
         
         # 按条件过滤
+        if lot_number:
+            lot_number_lower = lot_number.lower()
+            adcs = [adc for adc in adcs if lot_number_lower in adc.lot_number.lower()]
+        
         if sample_id:
             sample_id_lower = sample_id.lower()
             adcs = [adc for adc in adcs if sample_id_lower in adc.sample_id.lower()]
@@ -3096,6 +3165,49 @@ class MainWindow(QMainWindow):
         """刷新出入库记录列表"""
         movements = self.adc_controller.get_all_movements()
         self._update_movement_table(movements)
+        # 更新日期筛选器的默认范围
+        self._update_movement_date_range(movements)
+    
+    def _update_movement_date_range(self, movements: List[Dict]):
+        """根据出入库记录更新日期筛选器的范围"""
+        if not movements:
+            # 如果没有记录，使用默认范围
+            self.movement_date_from.setDate(QDate(2000, 1, 1))
+            self.movement_date_to.setDate(QDate(2099, 12, 31))
+            return
+        
+        min_date = None
+        max_date = None
+        
+        for m in movements:
+            if m['date']:
+                m_date = None
+                if isinstance(m['date'], datetime):
+                    m_date = QDate(m['date'].year, m['date'].month, m['date'].day)
+                elif isinstance(m['date'], str):
+                    try:
+                        dt = datetime.strptime(m['date'], '%Y-%m-%d %H:%M:%S.%f')
+                        m_date = QDate(dt.year, dt.month, dt.day)
+                    except ValueError:
+                        try:
+                            dt = datetime.strptime(m['date'], '%Y-%m-%d %H:%M:%S')
+                            m_date = QDate(dt.year, dt.month, dt.day)
+                        except ValueError:
+                            continue
+                
+                if m_date:
+                    if min_date is None or m_date < min_date:
+                        min_date = m_date
+                    if max_date is None or m_date > max_date:
+                        max_date = m_date
+        
+        # 设置日期范围
+        if min_date and max_date:
+            self.movement_date_from.setDate(min_date)
+            self.movement_date_to.setDate(max_date)
+        else:
+            self.movement_date_from.setDate(QDate(2000, 1, 1))
+            self.movement_date_to.setDate(QDate(2099, 12, 31))
     
     def _update_movement_table(self, movements: List[Dict]):
         """更新出入库记录表格"""
@@ -3158,14 +3270,83 @@ class MainWindow(QMainWindow):
             self.movement_table.setItem(row, 6, QTableWidgetItem(notes))
     
     def search_adc_movements(self):
-        """搜索出入库记录"""
-        keyword = self.movement_search_edit.text()
-        if keyword:
-            movements = self.adc_controller.search_movements_by_lot_number(keyword)
+        """搜索出入库记录（支持多条件筛选）"""
+        # 获取所有记录
+        lot_keyword = self.movement_search_edit.text().strip()
+        if lot_keyword:
+            movements = self.adc_controller.search_movements_by_lot_number(lot_keyword)
         else:
             movements = self.adc_controller.get_all_movements()
         
-        self._update_movement_table(movements)
+        # 按类型筛选
+        type_filter = self.movement_type_combo.currentText()
+        if type_filter == "入库":
+            movements = [m for m in movements if m['type'] == 'inbound']
+        elif type_filter == "出库":
+            movements = [m for m in movements if m['type'] == 'outbound']
+        
+        # 按操作人筛选
+        operator_keyword = self.movement_operator_edit.text().strip()
+        if operator_keyword:
+            movements = [m for m in movements if operator_keyword.lower() in m['operator'].lower()]
+        
+        # 按日期范围筛选
+        date_from = self.movement_date_from.date()
+        date_to = self.movement_date_to.date()
+        
+        filtered_movements = []
+        for m in movements:
+            if m['date']:
+                # 解析日期
+                m_date = None
+                if isinstance(m['date'], datetime):
+                    m_date = QDate(m['date'].year, m['date'].month, m['date'].day)
+                elif isinstance(m['date'], str):
+                    try:
+                        dt = datetime.strptime(m['date'], '%Y-%m-%d %H:%M:%S.%f')
+                        m_date = QDate(dt.year, dt.month, dt.day)
+                    except ValueError:
+                        try:
+                            dt = datetime.strptime(m['date'], '%Y-%m-%d %H:%M:%S')
+                            m_date = QDate(dt.year, dt.month, dt.day)
+                        except ValueError:
+                            pass
+                
+                if m_date:
+                    # 检查日期范围
+                    if m_date >= date_from and m_date <= date_to:
+                        filtered_movements.append(m)
+                else:
+                    # 无法解析日期的记录保留
+                    filtered_movements.append(m)
+            else:
+                # 没有日期的记录保留
+                filtered_movements.append(m)
+        
+        self._update_movement_table(filtered_movements)
+    
+    def clear_movement_search(self):
+        """清除出入库搜索条件"""
+        # 暂时断开信号，避免多次触发搜索
+        self.movement_type_combo.blockSignals(True)
+        self.movement_search_edit.blockSignals(True)
+        self.movement_operator_edit.blockSignals(True)
+        self.movement_date_from.blockSignals(True)
+        self.movement_date_to.blockSignals(True)
+        
+        self.movement_type_combo.setCurrentIndex(0)  # 全部
+        self.movement_search_edit.clear()
+        self.movement_operator_edit.clear()
+        
+        # 重新连接信号
+        self.movement_type_combo.blockSignals(False)
+        self.movement_search_edit.blockSignals(False)
+        self.movement_operator_edit.blockSignals(False)
+        self.movement_date_from.blockSignals(False)
+        self.movement_date_to.blockSignals(False)
+        
+        # 刷新数据（会自动更新日期范围为数据范围）
+        self.refresh_adc_movements()
     
     def adc_inbound(self):
         """ADC入库"""
