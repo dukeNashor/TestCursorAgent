@@ -39,6 +39,66 @@ def init_adc_tables(cursor):
     cursor.execute('''
         CREATE INDEX IF NOT EXISTS idx_adc_sample_id ON adc (sample_id)
     ''')
+    
+    # ==================== 出入库相关表 ====================
+    
+    # 创建出库记录表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS adc_outbound (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lot_number TEXT NOT NULL,
+            requester TEXT NOT NULL,
+            operator TEXT NOT NULL,
+            shipping_address TEXT,
+            shipping_date DATE,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # 创建出库明细表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS adc_outbound_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            outbound_id INTEGER NOT NULL,
+            spec_mg REAL NOT NULL,
+            quantity INTEGER NOT NULL,
+            FOREIGN KEY (outbound_id) REFERENCES adc_outbound (id) ON DELETE CASCADE
+        )
+    ''')
+    
+    # 创建入库记录表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS adc_inbound (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lot_number TEXT NOT NULL,
+            operator TEXT NOT NULL,
+            owner TEXT,
+            storage_position TEXT,
+            storage_date DATE,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # 创建入库明细表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS adc_inbound_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            inbound_id INTEGER NOT NULL,
+            spec_mg REAL NOT NULL,
+            quantity INTEGER NOT NULL,
+            FOREIGN KEY (inbound_id) REFERENCES adc_inbound (id) ON DELETE CASCADE
+        )
+    ''')
+    
+    # 为出入库记录的lot_number创建索引
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_adc_outbound_lot ON adc_outbound (lot_number)
+    ''')
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_adc_inbound_lot ON adc_inbound (lot_number)
+    ''')
 
 
 class ADCRepository:
@@ -169,4 +229,120 @@ class ADCRepository:
         if results and results[0]['total']:
             return int(results[0]['total'])
         return 0
+    
+    # ==================== 出库记录 CRUD ====================
+    
+    def create_outbound(self, lot_number: str, requester: str, operator: str,
+                       shipping_address: str, shipping_date: str, notes: str = "") -> int:
+        """创建出库记录"""
+        query = '''
+            INSERT INTO adc_outbound (lot_number, requester, operator, shipping_address, shipping_date, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+        '''
+        return self.db.execute_insert(query, (
+            lot_number, requester, operator, shipping_address, shipping_date, notes
+        ))
+    
+    def add_outbound_item(self, outbound_id: int, spec_mg: float, quantity: int) -> int:
+        """添加出库明细"""
+        query = '''
+            INSERT INTO adc_outbound_items (outbound_id, spec_mg, quantity)
+            VALUES (?, ?, ?)
+        '''
+        return self.db.execute_insert(query, (outbound_id, spec_mg, quantity))
+    
+    def get_outbound_by_id(self, outbound_id: int) -> Optional[Dict[str, Any]]:
+        """根据ID获取出库记录"""
+        query = "SELECT * FROM adc_outbound WHERE id = ?"
+        results = self.db.execute_query(query, (outbound_id,))
+        return results[0] if results else None
+    
+    def get_outbound_items(self, outbound_id: int) -> List[Dict[str, Any]]:
+        """获取出库明细"""
+        query = "SELECT * FROM adc_outbound_items WHERE outbound_id = ? ORDER BY spec_mg"
+        return self.db.execute_query(query, (outbound_id,))
+    
+    def get_all_outbounds(self) -> List[Dict[str, Any]]:
+        """获取所有出库记录"""
+        query = "SELECT * FROM adc_outbound ORDER BY created_at DESC"
+        return self.db.execute_query(query)
+    
+    def search_outbounds_by_lot_number(self, lot_number: str) -> List[Dict[str, Any]]:
+        """根据LotNumber搜索出库记录"""
+        query = "SELECT * FROM adc_outbound WHERE lot_number LIKE ? ORDER BY created_at DESC"
+        return self.db.execute_query(query, (f"%{lot_number}%",))
+    
+    def delete_outbound(self, outbound_id: int) -> bool:
+        """删除出库记录"""
+        query = "DELETE FROM adc_outbound WHERE id = ?"
+        affected = self.db.execute_update(query, (outbound_id,))
+        return affected > 0
+    
+    # ==================== 入库记录 CRUD ====================
+    
+    def create_inbound(self, lot_number: str, operator: str, owner: str,
+                      storage_position: str, storage_date: str, notes: str = "") -> int:
+        """创建入库记录"""
+        query = '''
+            INSERT INTO adc_inbound (lot_number, operator, owner, storage_position, storage_date, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+        '''
+        return self.db.execute_insert(query, (
+            lot_number, operator, owner, storage_position, storage_date, notes
+        ))
+    
+    def add_inbound_item(self, inbound_id: int, spec_mg: float, quantity: int) -> int:
+        """添加入库明细"""
+        query = '''
+            INSERT INTO adc_inbound_items (inbound_id, spec_mg, quantity)
+            VALUES (?, ?, ?)
+        '''
+        return self.db.execute_insert(query, (inbound_id, spec_mg, quantity))
+    
+    def get_inbound_by_id(self, inbound_id: int) -> Optional[Dict[str, Any]]:
+        """根据ID获取入库记录"""
+        query = "SELECT * FROM adc_inbound WHERE id = ?"
+        results = self.db.execute_query(query, (inbound_id,))
+        return results[0] if results else None
+    
+    def get_inbound_items(self, inbound_id: int) -> List[Dict[str, Any]]:
+        """获取入库明细"""
+        query = "SELECT * FROM adc_inbound_items WHERE inbound_id = ? ORDER BY spec_mg"
+        return self.db.execute_query(query, (inbound_id,))
+    
+    def get_all_inbounds(self) -> List[Dict[str, Any]]:
+        """获取所有入库记录"""
+        query = "SELECT * FROM adc_inbound ORDER BY created_at DESC"
+        return self.db.execute_query(query)
+    
+    def search_inbounds_by_lot_number(self, lot_number: str) -> List[Dict[str, Any]]:
+        """根据LotNumber搜索入库记录"""
+        query = "SELECT * FROM adc_inbound WHERE lot_number LIKE ? ORDER BY created_at DESC"
+        return self.db.execute_query(query, (f"%{lot_number}%",))
+    
+    def delete_inbound(self, inbound_id: int) -> bool:
+        """删除入库记录"""
+        query = "DELETE FROM adc_inbound WHERE id = ?"
+        affected = self.db.execute_update(query, (inbound_id,))
+        return affected > 0
+    
+    # ==================== 库存更新 ====================
+    
+    def get_spec_by_adc_and_mg(self, adc_id: int, spec_mg: float) -> Optional[Dict[str, Any]]:
+        """根据ADC ID和规格获取规格记录"""
+        query = "SELECT * FROM adc_specs WHERE adc_id = ? AND spec_mg = ?"
+        results = self.db.execute_query(query, (adc_id, spec_mg))
+        return results[0] if results else None
+    
+    def increase_spec_quantity(self, spec_id: int, delta: int) -> bool:
+        """增加规格库存量"""
+        query = "UPDATE adc_specs SET quantity = quantity + ? WHERE id = ?"
+        affected = self.db.execute_update(query, (delta, spec_id))
+        return affected > 0
+    
+    def decrease_spec_quantity(self, spec_id: int, delta: int) -> bool:
+        """减少规格库存量"""
+        query = "UPDATE adc_specs SET quantity = quantity - ? WHERE id = ? AND quantity >= ?"
+        affected = self.db.execute_update(query, (delta, spec_id, delta))
+        return affected > 0
 

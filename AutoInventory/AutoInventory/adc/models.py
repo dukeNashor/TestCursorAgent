@@ -108,3 +108,155 @@ class ADC:
                 total += spec.get('quantity', 0)
         return total
 
+
+# ==================== 出入库相关模型 ====================
+
+@dataclass
+class ADCMovementItem:
+    """出入库明细项（规格+数量）"""
+    id: Optional[int] = None
+    movement_id: int = 0          # 关联的出库/入库记录ID
+    spec_mg: float = 0.0          # 规格(mg)
+    quantity: int = 0             # 数量(小管数)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ADCMovementItem':
+        """从字典创建对象"""
+        item_fields = {'id', 'movement_id', 'spec_mg', 'quantity'}
+        filtered_data = {k: v for k, v in data.items() if k in item_fields}
+        return cls(**filtered_data)
+    
+    def get_total_mg(self) -> float:
+        """计算该明细的总毫克数"""
+        return self.spec_mg * self.quantity
+
+
+@dataclass
+class ADCOutbound:
+    """ADC出库记录"""
+    id: Optional[int] = None
+    lot_number: str = ""          # 关联的Lot Number
+    requester: str = ""           # 需求人
+    operator: str = ""            # 出库人
+    shipping_address: str = ""    # 寄送地址
+    shipping_date: Optional[datetime] = None  # 寄送日期
+    notes: str = ""               # 备注
+    created_at: Optional[datetime] = None     # 记录创建时间
+    items: List[ADCMovementItem] = field(default_factory=list)  # 出库明细
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        data = asdict(self)
+        if data.get('shipping_date'):
+            data['shipping_date'] = data['shipping_date'].isoformat() if isinstance(data['shipping_date'], datetime) else data['shipping_date']
+        if data.get('created_at'):
+            data['created_at'] = data['created_at'].isoformat() if isinstance(data['created_at'], datetime) else data['created_at']
+        return data
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ADCOutbound':
+        """从字典创建对象"""
+        if data.get('shipping_date') and isinstance(data['shipping_date'], str):
+            try:
+                data['shipping_date'] = datetime.fromisoformat(data['shipping_date'])
+            except ValueError:
+                data['shipping_date'] = datetime.strptime(data['shipping_date'], '%Y-%m-%d')
+        if data.get('created_at') and isinstance(data['created_at'], str):
+            data['created_at'] = datetime.fromisoformat(data['created_at'])
+        
+        outbound_fields = {
+            'id', 'lot_number', 'requester', 'operator', 'shipping_address',
+            'shipping_date', 'notes', 'created_at', 'items'
+        }
+        filtered_data = {k: v for k, v in data.items() if k in outbound_fields}
+        if 'items' not in filtered_data:
+            filtered_data['items'] = []
+        return cls(**filtered_data)
+    
+    def get_total_mg(self) -> float:
+        """计算出库总毫克数"""
+        total = 0.0
+        for item in self.items:
+            if isinstance(item, ADCMovementItem):
+                total += item.get_total_mg()
+            elif isinstance(item, dict):
+                total += item.get('spec_mg', 0) * item.get('quantity', 0)
+        return total
+    
+    def get_total_vials(self) -> int:
+        """计算出库总小管数"""
+        total = 0
+        for item in self.items:
+            if isinstance(item, ADCMovementItem):
+                total += item.quantity
+            elif isinstance(item, dict):
+                total += item.get('quantity', 0)
+        return total
+
+
+@dataclass
+class ADCInbound:
+    """ADC入库记录"""
+    id: Optional[int] = None
+    lot_number: str = ""          # 关联的Lot Number
+    operator: str = ""            # 入库人
+    owner: str = ""               # Owner（默认=入库人）
+    storage_position: str = ""    # 存放地址
+    storage_date: Optional[datetime] = None   # 存放日期
+    notes: str = ""               # 备注
+    created_at: Optional[datetime] = None     # 记录创建时间
+    items: List[ADCMovementItem] = field(default_factory=list)  # 入库明细
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        data = asdict(self)
+        if data.get('storage_date'):
+            data['storage_date'] = data['storage_date'].isoformat() if isinstance(data['storage_date'], datetime) else data['storage_date']
+        if data.get('created_at'):
+            data['created_at'] = data['created_at'].isoformat() if isinstance(data['created_at'], datetime) else data['created_at']
+        return data
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ADCInbound':
+        """从字典创建对象"""
+        if data.get('storage_date') and isinstance(data['storage_date'], str):
+            try:
+                data['storage_date'] = datetime.fromisoformat(data['storage_date'])
+            except ValueError:
+                data['storage_date'] = datetime.strptime(data['storage_date'], '%Y-%m-%d')
+        if data.get('created_at') and isinstance(data['created_at'], str):
+            data['created_at'] = datetime.fromisoformat(data['created_at'])
+        
+        inbound_fields = {
+            'id', 'lot_number', 'operator', 'owner', 'storage_position',
+            'storage_date', 'notes', 'created_at', 'items'
+        }
+        filtered_data = {k: v for k, v in data.items() if k in inbound_fields}
+        if 'items' not in filtered_data:
+            filtered_data['items'] = []
+        return cls(**filtered_data)
+    
+    def get_total_mg(self) -> float:
+        """计算入库总毫克数"""
+        total = 0.0
+        for item in self.items:
+            if isinstance(item, ADCMovementItem):
+                total += item.get_total_mg()
+            elif isinstance(item, dict):
+                total += item.get('spec_mg', 0) * item.get('quantity', 0)
+        return total
+    
+    def get_total_vials(self) -> int:
+        """计算入库总小管数"""
+        total = 0
+        for item in self.items:
+            if isinstance(item, ADCMovementItem):
+                total += item.quantity
+            elif isinstance(item, dict):
+                total += item.get('quantity', 0)
+        return total
+
