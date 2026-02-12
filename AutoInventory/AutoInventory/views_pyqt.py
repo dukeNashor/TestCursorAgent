@@ -5,7 +5,7 @@
 import sys
 import os
 import io
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QLineEdit, QTextEdit, QComboBox, QScrollArea,
     QListWidget, QListWidgetItem, QFrame, QSplitter, QMessageBox, QFileDialog,
     QDialog, QDialogButtonBox, QSpinBox, QDoubleSpinBox, QGroupBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QTabWidget, QProgressBar, QDateEdit
+    QHeaderView, QTabWidget, QProgressBar, QDateEdit, QInputDialog, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QSize, pyqtSignal, QThread, QTimer, QDate
 from PyQt5.QtGui import QPixmap, QFont, QColor, QImage
@@ -23,6 +23,9 @@ from material.models import Material, Order, OrderStatus, Priority
 from material.controller import MaterialController, OrderController, ReportController
 from adc.models import ADC, ADCSpec, ADCOutbound, ADCInbound, ADCMovementItem
 from adc.controller import ADCController, PRESET_SPECS
+from adc_workflow.models import ADCWorkflow, ADCWorkflowStep, ADCExperimentResult, AppUser
+from adc_workflow.controller import ADCWorkflowController
+from adc_workflow.request_schema import ordered_request_items_for_display
 from database import (
     load_config, save_config, get_database_list, add_database, 
     remove_database, set_current_database, DatabaseManager
@@ -1680,6 +1683,7 @@ class MainWindow(QMainWindow):
         self.order_controller = OrderController(self.db_manager, self.material_controller)
         self.report_controller = ReportController(self.db_manager)
         self.adc_controller = ADCController(self.db_manager)
+        self.workflow_controller = ADCWorkflowController(self.db_manager)
     
     def setup_ui(self):
         """设置用户界面"""
@@ -1731,6 +1735,11 @@ class MainWindow(QMainWindow):
         adc_movement_tab = QWidget()
         self.setup_adc_movement_tab(adc_movement_tab)
         self.tabs.addTab(adc_movement_tab, "ADC出入库")
+        
+        # ADC实验流程标签页
+        adc_workflow_tab = QWidget()
+        self.setup_adc_workflow_tab(adc_workflow_tab)
+        self.tabs.addTab(adc_workflow_tab, "ADC实验流程")
         
         # 状态栏
         self.statusBar().showMessage("就绪 - 支持多用户并发访问")
@@ -2284,6 +2293,557 @@ class MainWindow(QMainWindow):
         
         self.movement_stock_total_label.setText(f"汇总: {total_vials} 小管 / {total_mg:.2f} mg")
     
+    # ==================== ADC实验流程 Tab ====================
+    
+    def setup_adc_workflow_tab(self, parent):
+        """设置ADC实验流程标签页"""
+        layout = QVBoxLayout()
+        parent.setLayout(layout)
+        
+        # 当前用户与操作栏
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("当前用户:"))
+        self.workflow_user_combo = QComboBox()
+        self.workflow_user_combo.setMinimumWidth(120)
+        self.workflow_user_combo.currentIndexChanged.connect(self._on_workflow_user_changed)
+        toolbar.addWidget(self.workflow_user_combo)
+        self.workflow_role_label = QLabel("")
+        self.workflow_role_label.setStyleSheet("color: #666;")
+        toolbar.addWidget(self.workflow_role_label)
+        refresh_user_btn = QPushButton("刷新用户")
+        refresh_user_btn.clicked.connect(self._refresh_workflow_user_combo)
+        toolbar.addWidget(refresh_user_btn)
+        toolbar.addStretch()
+        self.workflow_import_btn = QPushButton("导入偶联任务文件")
+        self.workflow_import_btn.clicked.connect(self._workflow_import_xlsx)
+        toolbar.addWidget(self.workflow_import_btn)
+        refresh_btn = QPushButton("刷新列表")
+        refresh_btn.clicked.connect(self._refresh_workflow_list)
+        toolbar.addWidget(refresh_btn)
+        layout.addLayout(toolbar)
+        
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # 左侧：流程列表
+        left_w = QWidget()
+        left_layout = QVBoxLayout()
+        left_w.setLayout(left_layout)
+        left_layout.addWidget(QLabel("实验流程列表"))
+        self.workflow_table = QTableWidget()
+        self.workflow_table.setColumnCount(5)
+        self.workflow_table.setHorizontalHeaderLabels(["ID", "Request SN", "纯化步骤流程", "创建人", "创建时间"])
+        self.workflow_table.horizontalHeader().setStretchLastSection(True)
+        self.workflow_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.workflow_table.itemSelectionChanged.connect(self._on_workflow_selected)
+        left_layout.addWidget(self.workflow_table)
+        splitter.addWidget(left_w)
+        
+        # 右侧：详情
+        right_w = QWidget()
+        right_layout = QVBoxLayout()
+        right_w.setLayout(right_layout)
+        self.workflow_detail_placeholder = QLabel("请选择左侧一条实验流程")
+        self.workflow_detail_placeholder.setAlignment(Qt.AlignCenter)
+        right_layout.addWidget(self.workflow_detail_placeholder)
+        
+        self.workflow_detail_stack = QWidget()
+        detail_stack_layout = QVBoxLayout()
+        self.workflow_detail_stack.setLayout(detail_stack_layout)
+        
+        detail_stack_layout.addWidget(QLabel("Request 信息"))
+        self.workflow_request_table = QTableWidget()
+        self.workflow_request_table.setColumnCount(4)
+        self.workflow_request_table.setHorizontalHeaderLabels(["字段名", "类型", "必填/可选", "值"])
+        header = self.workflow_request_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
+        self.workflow_request_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.workflow_request_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.workflow_request_table.setAlternatingRowColors(True)
+        self.workflow_request_table.setSizePolicy(
+            self.workflow_request_table.sizePolicy().horizontalPolicy(),
+            QSizePolicy.Expanding
+        )
+        self.workflow_request_table.setStyleSheet("""
+            QTableWidget {
+                gridline-color: #dee2e6;
+                background-color: #fff;
+            }
+            QTableWidget::item {
+                padding: 4px 8px;
+                color: #212529;
+            }
+            QHeaderView::section {
+                background-color: #2c3e50;
+                color: #ecf0f1;
+                padding: 8px 10px;
+                font-weight: bold;
+                border: none;
+                border-right: 1px solid #34495e;
+            }
+            QHeaderView::section:last-child {
+                border-right: none;
+            }
+        """)
+        detail_stack_layout.addWidget(self.workflow_request_table, 1)
+        
+        detail_stack_layout.addWidget(QLabel("纯化步骤（可增删改）"))
+        steps_btn_layout = QHBoxLayout()
+        self.workflow_btn_step_up = QPushButton("上移")
+        self.workflow_btn_step_up.clicked.connect(self._workflow_step_move_up)
+        steps_btn_layout.addWidget(self.workflow_btn_step_up)
+        self.workflow_btn_step_down = QPushButton("下移")
+        self.workflow_btn_step_down.clicked.connect(self._workflow_step_move_down)
+        steps_btn_layout.addWidget(self.workflow_btn_step_down)
+        self.workflow_btn_step_add = QPushButton("添加步骤")
+        self.workflow_btn_step_add.clicked.connect(self._workflow_step_add)
+        steps_btn_layout.addWidget(self.workflow_btn_step_add)
+        self.workflow_btn_step_remove = QPushButton("删除步骤")
+        self.workflow_btn_step_remove.clicked.connect(self._workflow_step_remove)
+        steps_btn_layout.addWidget(self.workflow_btn_step_remove)
+        detail_stack_layout.addLayout(steps_btn_layout)
+        self.workflow_steps_table = QTableWidget()
+        self.workflow_steps_table.setColumnCount(3)
+        self.workflow_steps_table.setHorizontalHeaderLabels(["顺序", "步骤类型", "参数/Estimated recovery"])
+        self.workflow_steps_table.horizontalHeader().setStretchLastSection(True)
+        self.workflow_steps_table.setMaximumHeight(140)
+        detail_stack_layout.addWidget(self.workflow_steps_table, 0)
+        
+        action_btn_layout = QHBoxLayout()
+        btn_feed = QPushButton("生成投料表")
+        btn_feed.clicked.connect(self._workflow_show_feed_table)
+        action_btn_layout.addWidget(btn_feed)
+        self.workflow_btn_add_result = QPushButton("添加实验结果")
+        self.workflow_btn_add_result.clicked.connect(self._workflow_add_result)
+        action_btn_layout.addWidget(self.workflow_btn_add_result)
+        self.workflow_btn_del_wf = QPushButton("删除本流程")
+        self.workflow_btn_del_wf.clicked.connect(self._workflow_delete)
+        action_btn_layout.addWidget(self.workflow_btn_del_wf)
+        detail_stack_layout.addLayout(action_btn_layout)
+        
+        detail_stack_layout.addWidget(QLabel("实验结果列表"))
+        self.workflow_results_table = QTableWidget()
+        self.workflow_results_table.setColumnCount(6)
+        self.workflow_results_table.setHorizontalHeaderLabels(
+            ["Sample ID", "Lot No.", "Conc.(mg/mL)", "Yield(%)", "Purification Method", "操作"]
+        )
+        self.workflow_results_table.horizontalHeader().setStretchLastSection(True)
+        self.workflow_results_table.setMaximumHeight(100)
+        detail_stack_layout.addWidget(self.workflow_results_table, 0)
+        
+        right_layout.addWidget(self.workflow_detail_stack)
+        self.workflow_detail_stack.hide()
+        splitter.addWidget(right_w)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter)
+        
+        self._refresh_workflow_user_combo()
+        self._refresh_workflow_list()
+    
+    def _refresh_workflow_user_combo(self):
+        self.workflow_user_combo.blockSignals(True)
+        self.workflow_user_combo.clear()
+        users = self.workflow_controller.get_all_users()
+        for u in users:
+            self.workflow_user_combo.addItem(u.username, u.id)
+        if users:
+            self.workflow_user_combo.setCurrentIndex(0)
+        self.workflow_user_combo.blockSignals(False)
+        self._on_workflow_user_changed()
+    
+    def _on_workflow_user_changed(self):
+        idx = self.workflow_user_combo.currentIndex()
+        if idx < 0:
+            self.workflow_role_label.setText("")
+            self.workflow_import_btn.setEnabled(False)
+            return
+        user_id = self.workflow_user_combo.currentData()
+        if user_id is None:
+            users = self.workflow_controller.get_all_users()
+            if 0 <= idx < len(users):
+                user_id = users[idx].id
+        user = self.workflow_controller.get_user_by_id(user_id) if user_id else None
+        self.workflow_role_label.setText(f"角色: {user.role}" if user else "")
+        can_create = self.workflow_controller.can_create_workflow(user_id, user.role if user else "")
+        self.workflow_import_btn.setEnabled(can_create)
+        self._refresh_workflow_list()
+    
+    def _get_current_workflow_user_id_and_role(self):
+        idx = self.workflow_user_combo.currentIndex()
+        if idx < 0:
+            return None, ""
+        user_id = self.workflow_user_combo.currentData()
+        if user_id is None:
+            users = self.workflow_controller.get_all_users()
+            if 0 <= idx < len(users):
+                user_id = users[idx].id
+        user = self.workflow_controller.get_user_by_id(user_id) if user_id else None
+        return (user_id, user.role) if user else (None, "")
+    
+    def _workflow_require_can_edit(self) -> Optional[Tuple[int, str, ADCWorkflow]]:
+        """若当前用户对当前 workflow 有编辑权限则返回 (user_id, role, workflow)，否则弹窗并返回 None。"""
+        user_id, role = self._get_current_workflow_user_id_and_role()
+        w = getattr(self, "_current_workflow", None)
+        if not w or not user_id or not self.workflow_controller.can_edit_workflow(w, user_id, role):
+            QMessageBox.warning(self, "权限", "您没有权限编辑此流程。")
+            return None
+        return (user_id, role, w)
+    
+    def _workflow_require_can_delete(self) -> Optional[Tuple[int, str, ADCWorkflow]]:
+        """若当前用户对当前 workflow 有删除权限则返回 (user_id, role, workflow)，否则弹窗并返回 None。"""
+        user_id, role = self._get_current_workflow_user_id_and_role()
+        w = getattr(self, "_current_workflow", None)
+        if not w or not user_id or not self.workflow_controller.can_delete_workflow(w, user_id, role):
+            QMessageBox.warning(self, "权限", "您没有权限删除此流程。")
+            return None
+        return (user_id, role, w)
+    
+    def _refresh_workflow_list(self):
+        user_id, role = self._get_current_workflow_user_id_and_role()
+        if user_id is None:
+            self.workflow_table.setRowCount(0)
+            return
+        workflows = self.workflow_controller.get_workflows_for_user(user_id, role)
+        self.workflow_table.setRowCount(len(workflows))
+        user_id_to_name = {u.id: u.username for u in self.workflow_controller.get_all_users()}
+        for row, w in enumerate(workflows):
+            self.workflow_table.setItem(row, 0, QTableWidgetItem(str(w.id)))
+            self.workflow_table.setItem(row, 1, QTableWidgetItem(w.request_sn or ""))
+            self.workflow_table.setItem(row, 2, QTableWidgetItem(w.purification_flow_string or ""))
+            self.workflow_table.setItem(row, 3, QTableWidgetItem(user_id_to_name.get(w.created_by_user_id, "")))
+            created = w.created_at.strftime("%Y-%m-%d %H:%M") if w.created_at else ""
+            self.workflow_table.setItem(row, 4, QTableWidgetItem(created))
+        self.workflow_table.setRowHidden(0, False)
+    
+    def _on_workflow_selected(self):
+        current_row = self.workflow_table.currentRow()
+        if current_row < 0:
+            self.workflow_detail_placeholder.show()
+            self.workflow_detail_stack.hide()
+            return
+        wf_id_item = self.workflow_table.item(current_row, 0)
+        if not wf_id_item:
+            return
+        try:
+            wf_id = int(wf_id_item.text())
+        except ValueError:
+            return
+        workflow = self.workflow_controller.get_workflow_by_id(wf_id)
+        if not workflow:
+            return
+        self.workflow_detail_placeholder.hide()
+        self.workflow_detail_stack.show()
+        self._current_workflow_id = wf_id
+        self._current_workflow = workflow
+        user_id, role = self._get_current_workflow_user_id_and_role()
+        can_edit = self.workflow_controller.can_edit_workflow(workflow, user_id, role) if user_id is not None else False
+        self.workflow_btn_step_up.setEnabled(can_edit)
+        self.workflow_btn_step_down.setEnabled(can_edit)
+        self.workflow_btn_step_add.setEnabled(can_edit)
+        self.workflow_btn_step_remove.setEnabled(can_edit)
+        self.workflow_btn_add_result.setEnabled(can_edit)
+        self.workflow_btn_del_wf.setEnabled(can_edit)
+        import json
+        try:
+            raw = json.loads(workflow.raw_request_json) if workflow.raw_request_json else {}
+        except Exception:
+            raw = {}
+        ordered = ordered_request_items_for_display(raw)
+        self.workflow_request_table.setRowCount(len(ordered))
+        for row, (key, type_str, optional_label, value_str) in enumerate(ordered):
+            def _center_item(text):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter)
+                return item
+            self.workflow_request_table.setItem(row, 0, _center_item(key))
+            self.workflow_request_table.setItem(row, 1, _center_item(type_str))
+            self.workflow_request_table.setItem(row, 2, _center_item(optional_label))
+            value_item = QTableWidgetItem(value_str)
+            value_item.setTextAlignment(Qt.AlignCenter)
+            if value_str == "null":
+                value_item.setForeground(QColor("#6c757d"))
+                f = value_item.font()
+                f.setItalic(True)
+                value_item.setFont(f)
+            self.workflow_request_table.setItem(row, 3, value_item)
+        step_types = {t.id: t.name for t in self.workflow_controller.get_all_step_types(active_only=False)}
+        self.workflow_steps_table.setRowCount(len(workflow.steps))
+        for row, s in enumerate(workflow.steps):
+            self.workflow_steps_table.setItem(row, 0, QTableWidgetItem(str(s.step_order + 1)))
+            self.workflow_steps_table.setItem(row, 1, QTableWidgetItem(step_types.get(s.step_type_id, "")))
+            self.workflow_steps_table.setItem(row, 2, QTableWidgetItem(s.params_json or "{}"))
+        results = self.workflow_controller.get_experiment_results(wf_id)
+        self.workflow_results_table.setRowCount(len(results))
+        for row, r in enumerate(results):
+            self.workflow_results_table.setItem(row, 0, QTableWidgetItem(r.sample_id))
+            self.workflow_results_table.setItem(row, 1, QTableWidgetItem(r.lot_no))
+            self.workflow_results_table.setItem(row, 2, QTableWidgetItem(str(r.conc_mg_ml)))
+            self.workflow_results_table.setItem(row, 3, QTableWidgetItem(str(r.yield_pct)))
+            self.workflow_results_table.setItem(row, 4, QTableWidgetItem(r.purification_method or ""))
+            btn = QPushButton("删除")
+            btn.setProperty("result_id", r.id)
+            btn.setEnabled(can_edit)
+            btn.clicked.connect(lambda checked, rid=r.id: self._workflow_delete_result(rid))
+            self.workflow_results_table.setCellWidget(row, 5, btn)
+    
+    def _workflow_import_xlsx(self):
+        user_id, role = self._get_current_workflow_user_id_and_role()
+        if not self.workflow_controller.can_create_workflow(user_id, role):
+            QMessageBox.warning(self, "提示", "请先选择当前用户。")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "选择偶联任务文件", "", "Excel (*.xlsx);;All (*)")
+        if not path:
+            return
+        ok, msg, ids = self.workflow_controller.import_task_xlsx(path, user_id)
+        if ok:
+            QMessageBox.information(self, "导入结果", msg)
+            self._refresh_workflow_list()
+            # 选中第一行（新导入的流程）并刷新详情，避免仍显示旧选中项的空 Request 信息
+            if self.workflow_table.rowCount() > 0:
+                self.workflow_table.setCurrentCell(0, 0)
+                self._on_workflow_selected()
+        else:
+            QMessageBox.warning(self, "导入失败", msg)
+    
+    def _workflow_step_move_up(self):
+        if not getattr(self, "_current_workflow_id", None):
+            return
+        if self._workflow_require_can_edit() is None:
+            return
+        row = self.workflow_steps_table.currentRow()
+        if row <= 0:
+            return
+        w = self._current_workflow
+        steps = list(w.steps)
+        steps[row], steps[row - 1] = steps[row - 1], steps[row]
+        names = []
+        type_id_to_name = {t.id: t.name for t in self.workflow_controller.get_all_step_types(active_only=False)}
+        for s in steps:
+            names.append(type_id_to_name.get(s.step_type_id, ""))
+        self.workflow_controller.update_workflow_steps(self._current_workflow_id, names)
+        self._on_workflow_selected()
+    
+    def _workflow_step_move_down(self):
+        if not getattr(self, "_current_workflow_id", None):
+            return
+        if self._workflow_require_can_edit() is None:
+            return
+        row = self.workflow_steps_table.currentRow()
+        if row < 0 or row >= self.workflow_steps_table.rowCount() - 1:
+            return
+        w = self._current_workflow
+        steps = list(w.steps)
+        steps[row], steps[row + 1] = steps[row + 1], steps[row]
+        type_id_to_name = {t.id: t.name for t in self.workflow_controller.get_all_step_types(active_only=False)}
+        names = [type_id_to_name.get(s.step_type_id, "") for s in steps]
+        self.workflow_controller.update_workflow_steps(self._current_workflow_id, names)
+        self._on_workflow_selected()
+    
+    def _workflow_step_add(self):
+        if not getattr(self, "_current_workflow_id", None):
+            return
+        if self._workflow_require_can_edit() is None:
+            return
+        types = self.workflow_controller.get_all_step_types(active_only=True)
+        if not types:
+            QMessageBox.information(self, "提示", "暂无纯化步骤类型。")
+            return
+        name, ok = QInputDialog.getItem(self, "添加步骤", "选择步骤类型:", [t.name for t in types], 0, False)
+        if not ok or not name:
+            return
+        w = self._current_workflow
+        type_id_to_name = {t.id: t.name for t in self.workflow_controller.get_all_step_types(active_only=False)}
+        names = [type_id_to_name.get(s.step_type_id, "") for s in w.steps]
+        names.append(name)
+        self.workflow_controller.update_workflow_steps(self._current_workflow_id, names)
+        self._on_workflow_selected()
+    
+    def _workflow_step_remove(self):
+        if not getattr(self, "_current_workflow_id", None):
+            return
+        if self._workflow_require_can_edit() is None:
+            return
+        row = self.workflow_steps_table.currentRow()
+        if row < 0:
+            return
+        w = self._current_workflow
+        type_id_to_name = {t.id: t.name for t in self.workflow_controller.get_all_step_types(active_only=False)}
+        names = [type_id_to_name.get(s.step_type_id, "") for i, s in enumerate(w.steps) if i != row]
+        self.workflow_controller.update_workflow_steps(self._current_workflow_id, names)
+        flow_str = "+".join(names)
+        self.workflow_controller.update_workflow_purification_string(self._current_workflow_id, flow_str)
+        self._on_workflow_selected()
+    
+    def _workflow_show_feed_table(self):
+        if not getattr(self, "_current_workflow_id", None):
+            return
+        data = self.workflow_controller.get_feed_table_data(self._current_workflow_id)
+        if not data:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ADC实验流程信息投料表")
+        dlg.setMinimumSize(700, 400)
+        layout = QVBoxLayout()
+        dlg.setLayout(layout)
+        table = QTableWidget()
+        rows = []
+        ordered = data.get("ordered_request")
+        if ordered:
+            rows.extend((str(k), str(v)) for k, v in ordered)
+        else:
+            for k, v in data.get("raw_request", {}).items():
+                if k == "_sheet_name":
+                    continue
+                rows.append((str(k), str(v) if v is not None else ""))
+        for s in data.get("steps", []):
+            rows.append(("步骤-%d" % (s["order"] + 1), s.get("type_name", "")))
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["项目", "内容"])
+        table.setRowCount(len(rows))
+        for row, (a, b) in enumerate(rows):
+            table.setItem(row, 0, QTableWidgetItem(a))
+            table.setItem(row, 1, QTableWidgetItem(b))
+        table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(table)
+        bbox = QDialogButtonBox(QDialogButtonBox.Ok)
+        bbox.accepted.connect(dlg.accept)
+        layout.addWidget(bbox)
+        dlg.exec_()
+    
+    def _workflow_add_result(self):
+        if not getattr(self, "_current_workflow_id", None):
+            return
+        t = self._workflow_require_can_edit()
+        if t is None:
+            return
+        user_id, role, w = t
+        default_purification = w.purification_flow_string or ""
+        try:
+            import json
+            raw = json.loads(w.raw_request_json) if w.raw_request_json else {}
+        except Exception:
+            raw = {}
+        default_sample = (raw.get("Product ID") or raw.get("Request ID") or w.request_sn or "")
+        if isinstance(default_sample, (int, float)):
+            default_sample = str(int(default_sample))
+        dlg = QDialog(self)
+        dlg.setWindowTitle("添加实验结果")
+        dlg.setMinimumSize(400, 420)
+        form = QGridLayout()
+        dlg.setLayout(form)
+        r = 0
+        sample_edit = QLineEdit(default_sample)
+        form.addWidget(QLabel("Sample ID:"), r, 0)
+        form.addWidget(sample_edit, r, 1)
+        r += 1
+        lot_edit = QLineEdit()
+        lot_edit.setPlaceholderText("如 WBPX1111-260208001")
+        form.addWidget(QLabel("Lot No.:"), r, 0)
+        form.addWidget(lot_edit, r, 1)
+        r += 1
+        conc_spin = QDoubleSpinBox()
+        form.addWidget(QLabel("Conc.(mg/mL):"), r, 0)
+        form.addWidget(conc_spin, r, 1)
+        r += 1
+        amount_spin = QDoubleSpinBox()
+        form.addWidget(QLabel("Amount(mg):"), r, 0)
+        form.addWidget(amount_spin, r, 1)
+        r += 1
+        yield_spin = QDoubleSpinBox()
+        form.addWidget(QLabel("Yield(%):"), r, 0)
+        form.addWidget(yield_spin, r, 1)
+        r += 1
+        msdar_spin = QDoubleSpinBox()
+        form.addWidget(QLabel("MS-DAR:"), r, 0)
+        form.addWidget(msdar_spin, r, 1)
+        r += 1
+        mono_spin = QDoubleSpinBox()
+        form.addWidget(QLabel("Monomer(%):"), r, 0)
+        form.addWidget(mono_spin, r, 1)
+        r += 1
+        free_spin = QDoubleSpinBox()
+        form.addWidget(QLabel("Free drug(%):"), r, 0)
+        form.addWidget(free_spin, r, 1)
+        r += 1
+        endo_edit = QLineEdit()
+        form.addWidget(QLabel("Endotoxin:"), r, 0)
+        form.addWidget(endo_edit, r, 1)
+        r += 1
+        aliq_edit = QLineEdit()
+        form.addWidget(QLabel("Aliquot:"), r, 0)
+        form.addWidget(aliq_edit, r, 1)
+        r += 1
+        puri_edit = QLineEdit(default_purification)
+        form.addWidget(QLabel("Purification Method:"), r, 0)
+        form.addWidget(puri_edit, r, 1)
+        r += 1
+        bbox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bbox.accepted.connect(dlg.accept)
+        bbox.rejected.connect(dlg.reject)
+        form.addWidget(bbox, r, 0, 1, 2)
+        
+        def get_float(w):
+            return w.value() if w else 0.0
+        def get_text(w):
+            return w.text().strip() if w else ""
+        
+        if dlg.exec_() == QDialog.Accepted:
+            lot_no = get_text(lot_edit)
+            if lot_no and not self._is_lot_no_format_ok(lot_no):
+                if QMessageBox.Yes != QMessageBox.question(
+                    self, "Lot No. 格式",
+                    "Lot No. 建议格式为 WBPX项目编号-日期-任务ID（如 WBPX1111-260208001）。是否仍要保存？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                ):
+                    return
+            self.workflow_controller.add_experiment_result(
+                self._current_workflow_id,
+                user_id,
+                sample_id=get_text(sample_edit),
+                lot_no=lot_no,
+                conc_mg_ml=get_float(conc_spin),
+                amount_mg=get_float(amount_spin),
+                yield_pct=get_float(yield_spin),
+                ms_dar=get_float(msdar_spin),
+                monomer_pct=get_float(mono_spin),
+                free_drug_pct=get_float(free_spin),
+                endotoxin=get_text(endo_edit),
+                aliquot=get_text(aliq_edit),
+                purification_method=get_text(puri_edit),
+            )
+            self._on_workflow_selected()
+    
+    def _is_lot_no_format_ok(self, lot_no: str) -> bool:
+        """Lot No. 建议格式 WBPX1111-260208001（项目编号-日期-任务ID）"""
+        import re
+        return bool(re.match(r"^WBPX\d+-\d{6}\d*$", lot_no.strip()))
+    
+    def _workflow_delete_result(self, result_id):
+        if self._workflow_require_can_edit() is None:
+            return
+        if QMessageBox.Yes != QMessageBox.question(self, "确认", "确定删除该实验结果？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No):
+            return
+        self.workflow_controller.delete_experiment_result(result_id)
+        self._on_workflow_selected()
+    
+    def _workflow_delete(self):
+        if not getattr(self, "_current_workflow_id", None):
+            return
+        if self._workflow_require_can_delete() is None:
+            return
+        if QMessageBox.Yes != QMessageBox.question(self, "确认", "确定删除本实验流程及其步骤、实验结果？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No):
+            return
+        self.workflow_controller.delete_workflow(self._current_workflow_id)
+        self._current_workflow_id = None
+        self._current_workflow = None
+        self.workflow_detail_placeholder.show()
+        self.workflow_detail_stack.hide()
+        self._refresh_workflow_list()
+    
     def setup_report_tab(self, parent):
         """设置报告生成标签页"""
         layout = QVBoxLayout()
@@ -2433,6 +2993,10 @@ class MainWindow(QMainWindow):
         """刷新所有数据"""
         self.refresh_adcs()
         self.refresh_adc_movements()
+        if hasattr(self, "_refresh_workflow_user_combo"):
+            self._refresh_workflow_user_combo()
+        if hasattr(self, "_refresh_workflow_list"):
+            self._refresh_workflow_list()
     
     # ==================== 物料相关方法 ====================
     

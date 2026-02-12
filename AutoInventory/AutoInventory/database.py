@@ -159,6 +159,10 @@ class DatabaseManager:
         from adc.repository import init_adc_tables
         init_adc_tables(cursor)
         
+        # 初始化ADC实验流程模块的表
+        from adc_workflow.repository import init_adc_workflow_tables
+        init_adc_workflow_tables(cursor)
+        
         conn.commit()
         conn.close()
     
@@ -190,7 +194,21 @@ class DatabaseManager:
         new_id = cursor.lastrowid
         conn.close()
         return new_id
-    
+
+    def with_connection(self, fn):
+        """在单一连接上执行 fn(cursor)，返回 fn 的返回值。调用方负责 commit/rollback。"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            result = fn(cursor)
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def execute_transaction(self, operations: List[tuple]) -> bool:
         """执行事务操作，确保原子性"""
         with self._lock:  # 使用锁确保事务的原子性

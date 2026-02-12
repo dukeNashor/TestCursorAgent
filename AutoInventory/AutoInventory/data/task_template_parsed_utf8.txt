@@ -1,0 +1,57 @@
+1 3 偶联scientist
+1 4 Guo Ji
+2 3 WBP Code
+2 4 WBPX1461
+3 3 Reaction Scale (mg)
+4 3 Product ID
+4 4 IgG-CPT65
+5 3 Batch#
+6 2 mAb information
+7 3 Protein ID
+7 4 IgG
+8 3 Protein batch#
+8 4 T76242
+9 3 Protein isotype
+10 3 New Carrier
+11 3 MW of antibody (Da)
+12 3 MW of LC (Da)
+13 3 MW of HC (Da)
+14 3 Ab extinction coeff
+15 3 Calculated PI value
+15 4 NA
+16 3 Buffer of Antibody
+16 4 1X PBS, pH7.4
+17 3 Antibody concention (mg/mL)
+18 2 LP information
+19 3 Linker Payload ID
+19 4 17#CPT-65
+20 3 LP Batch#
+20 4 ET100933-31
+21 3 NEW LP
+22 3 Payload Type
+23 3 LP浓度
+23 4 10 mM
+24 3 MW of LP (Da)
+25 3 Leaving group (Da)
+25 4 NA
+26 3 Dissolved in
+26 4 DMA
+27 3 是否预约标曲
+27 4 N
+28 3 Connector
+28 4 溴接头
+29 2 Conjugation buffer
+29 3 1X PBS, pH7.4（溴接头）
+30 2 Purification method
+30 3 Zeba+Amicon
+31 2 Aliqout information
+31 3 2mg/vial
+32 2 Comments
+33 2 ID
+34 2 ADC Target Quality
+34 3 检项
+34 4 特殊要求
+35 3 检项示例1
+35 4 特殊要求1
+36 3 检项示例2
+36 4 特殊要求2

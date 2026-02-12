@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADC偶联任务执行流程图</title>
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 28px 20px 36px;
+            overflow-x: auto;
+        }
+
+        .page-title {
+            text-align: center;
+            color: #fff;
+            font-size: 26px;
+            font-weight: 700;
+            margin-bottom: 4px;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.25);
+            letter-spacing: 4px;
+        }
+
+        .page-subtitle {
+            text-align: center;
+            color: rgba(255,255,255,0.75);
+            font-size: 13px;
+            margin-bottom: 22px;
+            letter-spacing: 1px;
+        }
+
+        #chart-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #chart-container {
+            position: relative;
+            background: #ffffff;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.18), 0 4px 14px rgba(0,0,0,0.10);
+            overflow: hidden;
+        }
+
+        /* ── Swim Lanes ── */
+        .swim-lane {
+            position: absolute;
+            left: 0;
+            right: 0;
+            display: flex;
+        }
+        .swim-lane:not(:last-child) { border-bottom: 1px solid #e5e7eb; }
+
+        .lane-header {
+            width: 148px;
+            min-width: 148px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-weight: 600;
+            z-index: 2;
+            position: relative;
+        }
+        .lane-header .role-abbr {
+            font-size: 22px;
+            font-weight: 800;
+            line-height: 1.2;
+        }
+        .lane-header .role-name {
+            font-size: 10px;
+            opacity: 0.85;
+            text-align: center;
+            line-height: 1.35;
+            margin-top: 3px;
+        }
+        .lane-body { flex: 1; }
+
+        /* ── Flow Nodes ── */
+        .flow-node {
+            position: absolute;
+            background: #fff;
+            border-radius: 10px;
+            border: 2px solid #cbd5e1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            font-size: 11.5px;
+            font-weight: 500;
+            color: #1e293b;
+            cursor: pointer;
+            z-index: 6;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            padding: 4px 6px;
+            line-height: 1.35;
+            transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+            user-select: none;
+        }
+        .flow-node:hover {
+            transform: translateY(-3px) scale(1.06);
+            box-shadow: 0 10px 28px rgba(0,0,0,0.16);
+            z-index: 20;
+        }
+
+        .flow-node.decision {
+            background: #fffbf0;
+            border-color: #f59e0b;
+            border-width: 2.5px;
+            font-weight: 600;
+        }
+        .flow-node.decision:hover { border-color: #d97706; }
+
+        .flow-node.end-fail {
+            background: #fef2f2;
+            border-color: #ef4444;
+            color: #b91c1c;
+            font-weight: 600;
+        }
+
+        .flow-node.start {
+            background: #f0fdf4;
+            border-color: #22c55e;
+        }
+        .flow-node.start:hover { border-color: #16a34a; }
+
+        .flow-node.end {
+            background: #eff6ff;
+            border-color: #3b82f6;
+        }
+        .flow-node.end:hover { border-color: #2563eb; }
+
+        /* Step badge */
+        .step-badge {
+            position: absolute;
+            top: -9px;
+            left: -9px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            color: #fff;
+            font-size: 10px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 7;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+        }
+
+        /* ── SVG Layer ── */
+        #svg-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 4;
+            pointer-events: none;
+            overflow: visible;
+        }
+
+        /* Edge animations */
+        @keyframes dashFlow {
+            to { stroke-dashoffset: -20; }
+        }
+        @keyframes dashFlowFail {
+            to { stroke-dashoffset: -16; }
+        }
+
+        .edge-path {
+            fill: none;
+            stroke: #94b8d4;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-dasharray: 10 5;
+            animation: dashFlow 1s linear infinite;
+            transition: stroke-width 0.3s ease, opacity 0.3s ease;
+        }
+        .edge-path.pass-edge {
+            stroke: #4ade80;
+            stroke-width: 2.5;
+        }
+        .edge-path.fail-edge {
+            stroke: #f87171;
+            stroke-dasharray: 6 4;
+            animation: dashFlowFail 0.7s linear infinite;
+        }
+        .edge-path.highlighted {
+            stroke-width: 4;
+            filter: drop-shadow(0 0 5px currentColor);
+            opacity: 1;
+        }
+        .edge-path.dimmed {
+            opacity: 0.12;
+        }
+
+        .edge-label {
+            font-size: 11px;
+            font-weight: 700;
+            pointer-events: none;
+        }
+        .edge-label-bg {
+            pointer-events: none;
+        }
+
+        /* ── Tooltip ── */
+        #tooltip {
+            position: fixed;
+            max-width: 300px;
+            padding: 14px 18px;
+            border-radius: 10px;
+            background: rgba(15, 23, 42, 0.95);
+            color: #e2e8f0;
+            font-size: 13px;
+            line-height: 1.7;
+            pointer-events: none;
+            z-index: 9999;
+            display: none;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+        #tooltip .tip-role {
+            font-size: 11px;
+            color: #93c5fd;
+            margin-bottom: 5px;
+            letter-spacing: 0.5px;
+        }
+        #tooltip .tip-title {
+            font-size: 15px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(255,255,255,0.10);
+            color: #fff;
+        }
+
+        /* ── Legend ── */
+        .legend-bar {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 30px;
+            margin-top: 18px;
+            flex-wrap: wrap;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: rgba(255,255,255,0.85);
+            font-size: 12px;
+        }
+        .legend-swatch {
+            width: 30px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        .legend-swatch.dashed {
+            background: repeating-linear-gradient(90deg, #f87171 0, #f87171 5px, transparent 5px, transparent 9px);
+            height: 3px;
+        }
+    </style>
+</head>
+<body>
+    <h1 class="page-title">ADC偶联任务执行流程</h1>
+    <p class="page-subtitle">ADC Conjugation Task Execution Workflow</p>
+
+    <div id="chart-wrapper">
+        <div id="chart-container">
+            <svg id="svg-layer" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <marker id="arr" markerWidth="12" markerHeight="9" refX="10" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
+                        <path d="M1,1 L10,4.5 L1,8" fill="none" stroke="#94b8d4" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+                    </marker>
+                    <marker id="arr-g" markerWidth="12" markerHeight="9" refX="10" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
+                        <path d="M1,1 L10,4.5 L1,8" fill="none" stroke="#4ade80" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+                    </marker>
+                    <marker id="arr-r" markerWidth="12" markerHeight="9" refX="10" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
+                        <path d="M1,1 L10,4.5 L1,8" fill="none" stroke="#f87171" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+                    </marker>
+                </defs>
+            </svg>
+        </div>
+    </div>
+
+    <div class="legend-bar">
+        <div class="legend-item"><div class="legend-swatch" style="background:#94b8d4"></div>正常流转</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#4ade80"></div>审核通过</div>
+        <div class="legend-item"><div class="legend-swatch dashed"></div>审核未通过</div>
+    </div>
+
+    <div id="tooltip"></div>
+
+    <script>
+    (function() {
+        /* ════════════════════ Configuration ════════════════════ */
+        var HEADER_W  = 148;
+        var COL_W     = 155;
+        var LANE_H    = 116;
+        var NODE_W    = 122;
+        var NODE_H    = 50;
+        var PAD_L     = 36;
+        var PAD_R     = 42;
+        var NUM_COLS  = 12;   /* columns 0 – 11 */
+
+        function colX(c)  { return HEADER_W + PAD_L + c * COL_W + COL_W / 2; }
+        function laneY(i) { return i * LANE_H + LANE_H / 2; }
+
+        var chartW = HEADER_W + PAD_L + NUM_COLS * COL_W + PAD_R;
+        var chartH = 5 * LANE_H;
+
+        /* ════════════════════ Lane Definitions ════════════════════ */
+        var lanes = [
+            { id: 'CL',  abbr: 'CL',  name: '客户<br>Client',               color: '#3b82f6', bg: '#eff6ff' },
+            { id: 'FL',  abbr: 'FL',  name: 'Functional<br>Leader',          color: '#22c55e', bg: '#f0fdf4' },
+            { id: 'FCL', abbr: 'FCL', name: 'FCT Leader',                    color: '#f59e0b', bg: '#fffbeb' },
+            { id: 'SC',  abbr: 'SC',  name: '实验员<br>Scientist',           color: '#a855f7', bg: '#faf5ff' },
+            { id: 'SM',  abbr: 'SM',  name: '库存管理<br>Storage Manager',   color: '#64748b', bg: '#f8fafc' }
+        ];
+        var laneIdx = {};
+        for (var i = 0; i < lanes.length; i++) { laneIdx[lanes[i].id] = i; }
+
+        /* ════════════════════ Node Definitions ════════════════════ */
+        /*
+         * Main flow has 12 numbered steps.
+         * Support actions (SM operations, EndFail) have no step number.
+         */
+        var nodes = [
+            { id: 'CL_provide', label: '提供物料',
+              lane: 'CL', col: 0, type: 'start', step: 1,
+              tip: '客户(CL)提供原始物料（抗体、药物连接子等），交由Functional Leader(FL)接收。' },
+
+            { id: 'FL_recv', label: '接收物料',
+              lane: 'FL', col: 1, step: 2,
+              tip: 'FL从CL手中接收物料，核对物料清单与规格信息，安排通过SM完成入库。' },
+
+            { id: 'SM_in1', label: '物料入库',
+              lane: 'SM', col: 1,
+              tip: '库存管理人员(SM)接收FL转交的物料，完成入库登记、条码标签与存储。' },
+
+            { id: 'FL_request', label: '创建ADC Request',
+              lane: 'FL', col: 2, step: 3,
+              tip: 'FL在系统中创建ADC Request，明确偶联需求、实验参数与交付要求，并转发给FCL。' },
+
+            { id: 'FCL_assign', label: '分配任务给SC',
+              lane: 'FCL', col: 3, step: 4,
+              tip: 'FCT Leader(FCL)评估ADC Request，选择合适的实验员(SC)并分配偶联实验任务。' },
+
+            { id: 'SC_trial', label: '小试 + 生成报告',
+              lane: 'SC', col: 4, step: 5,
+              tip: 'SC根据任务要求开展小试实验，优化反应条件，记录实验数据，形成小试报告。' },
+
+            { id: 'FCL_check', label: '◆ 检查小试报告',
+              lane: 'FCL', col: 5, type: 'decision', step: 6,
+              tip: 'FCL审阅小试报告，评估偶联效率、DAR值、纯度等关键指标，判断是否满足放大反应要求。通过则继续；未通过则终止流程。' },
+
+            { id: 'EndFail', label: '✕ 流程终止',
+              lane: 'FCL', col: 6, type: 'end-fail',
+              tip: '小试结果未达标，本次ADC偶联任务终止。可根据反馈调整方案后重新发起请求。' },
+
+            { id: 'SC_scaleup', label: '放大反应 +<br>生成ADC产物',
+              lane: 'SC', col: 6, step: 7,
+              tip: '小试通过后，SC按照优化条件执行放大反应，制备ADC产物并进行质量检测。产物交由SM入库。' },
+
+            { id: 'SM_in2', label: 'ADC产物入库',
+              lane: 'SM', col: 6,
+              tip: 'SM接收SC制备的ADC产物，完成入库登记、条件存储与库存更新。' },
+
+            { id: 'SC_report', label: '生成实验报告<br>(PPT + Excel)',
+              lane: 'SC', col: 7, step: 8,
+              tip: 'SC整理放大反应的完整实验结果，生成PPT展示材料（含图表与分析）和Excel原始数据表格。' },
+
+            { id: 'SC_forward', label: '转发报告给FCL',
+              lane: 'SC', col: 8, step: 9,
+              tip: 'SC将PPT和Excel两种形式的实验报告发送给FCL，等待审核反馈。' },
+
+            { id: 'FCL_review', label: '复核报告 →<br>转发给FL',
+              lane: 'FCL', col: 9, step: 10,
+              tip: 'FCL仔细审核报告中的实验数据与分析结论，确认无误后将报告转发给FL。' },
+
+            { id: 'FL_final', label: '安排出库与寄送',
+              lane: 'FL', col: 10, step: 11,
+              tip: 'FL收到审核通过的报告，通知SM安排ADC产物出库，并组织快递寄送至客户(CL)。' },
+
+            { id: 'SM_out', label: 'ADC产物出库',
+              lane: 'SM', col: 10,
+              tip: 'SM执行ADC产物出库流程，核对产物信息与包装，配合FL完成寄送准备。' },
+
+            { id: 'CL_receive', label: '接收ADC产物',
+              lane: 'CL', col: 11, type: 'end', step: 12,
+              tip: '客户(CL)收到FL寄送的ADC产物及相关实验报告（PPT + Excel），流程完成。' }
+        ];
+
+        /* ════════════════════ Edge Definitions ════════════════════ */
+        var edges = [
+            { from: 'CL_provide', to: 'FL_recv' },
+            { from: 'FL_recv',    to: 'SM_in1' },
+            { from: 'FL_recv',    to: 'FL_request' },
+            { from: 'FL_request', to: 'FCL_assign' },
+            { from: 'FCL_assign', to: 'SC_trial' },
+            { from: 'SC_trial',   to: 'FCL_check' },
+            { from: 'FCL_check',  to: 'SC_scaleup', type: 'pass', label: '通过' },
+            { from: 'FCL_check',  to: 'EndFail',    type: 'fail', label: '未通过' },
+            { from: 'SC_scaleup', to: 'SM_in2' },
+            { from: 'SC_scaleup', to: 'SC_report' },
+            { from: 'SC_report',  to: 'SC_forward' },
+            { from: 'SC_forward', to: 'FCL_review' },
+            { from: 'FCL_review', to: 'FL_final' },
+            { from: 'FL_final',   to: 'SM_out' },
+            { from: 'FL_final',   to: 'CL_receive' }
+        ];
+
+        /* ── Compute node center coordinates ── */
+        var nodeMap = {};
+        for (var i = 0; i < nodes.length; i++) {
+            var n = nodes[i];
+            n.cx = colX(n.col);
+            n.cy = laneY(laneIdx[n.lane]);
+            nodeMap[n.id] = n;
+        }
+
+        /* ════════════════════ DOM Setup ════════════════════ */
+        var container = document.getElementById('chart-container');
+        container.style.width  = chartW + 'px';
+        container.style.height = chartH + 'px';
+
+        var svg = document.getElementById('svg-layer');
+        svg.setAttribute('width',  chartW);
+        svg.setAttribute('height', chartH);
+        svg.setAttribute('viewBox', '0 0 ' + chartW + ' ' + chartH);
+
+        var tooltipEl = document.getElementById('tooltip');
+
+        /* ════════════════════ Render Swim Lanes ════════════════════ */
+        for (var li = 0; li < lanes.length; li++) {
+            var lane = lanes[li];
+
+            var laneDiv = document.createElement('div');
+            laneDiv.className = 'swim-lane';
+            laneDiv.style.top    = (li * LANE_H) + 'px';
+            laneDiv.style.height = LANE_H + 'px';
+            laneDiv.style.background = lane.bg;
+
+            var hdr = document.createElement('div');
+            hdr.className = 'lane-header';
+            hdr.style.background = lane.color;
+            hdr.innerHTML = '<span class="role-abbr">' + lane.abbr + '</span>' +
+                            '<span class="role-name">' + lane.name + '</span>';
+
+            var body = document.createElement('div');
+            body.className = 'lane-body';
+
+            laneDiv.appendChild(hdr);
+            laneDiv.appendChild(body);
+            container.appendChild(laneDiv);
+        }
+
+        /* ════════════════════ Render Nodes ════════════════════ */
+        for (var ni = 0; ni < nodes.length; ni++) {
+            var n = nodes[ni];
+            var laneColor = lanes[laneIdx[n.lane]].color;
+
+            var div = document.createElement('div');
+            div.className = 'flow-node';
+            if (n.type) { div.classList.add(n.type); }
+
+            div.style.left   = (n.cx - NODE_W / 2) + 'px';
+            div.style.top    = (n.cy - NODE_H / 2) + 'px';
+            div.style.width  = NODE_W + 'px';
+            div.style.height = NODE_H + 'px';
+
+            /* Colored left accent (non-special nodes) */
+            if (!n.type) {
+                div.style.borderLeftWidth = '4px';
+                div.style.borderLeftColor = laneColor;
+            }
+
+            div.innerHTML = n.label;
+            div.dataset.nid = n.id;
+
+            /* Step number badge */
+            if (n.step) {
+                var badge = document.createElement('span');
+                badge.className = 'step-badge';
+                badge.textContent = n.step;
+                badge.style.background = laneColor;
+                div.appendChild(badge);
+            }
+
+            /* Hover events (closure for correct node ref) */
+            (function(node, el) {
+                el.addEventListener('mouseenter', function(evt) {
+                    showTooltip(node, evt);
+                    highlightConnected(node.id);
+                });
+                el.addEventListener('mousemove', function(evt) {
+                    positionTooltip(evt);
+                });
+                el.addEventListener('mouseleave', function() {
+                    hideTooltip();
+                    clearHighlight();
+                });
+            })(n, div);
+
+            container.appendChild(div);
+        }
+
+        /* ════════════════════ Render Edges (SVG) ════════════════════ */
+        var edgeEls = [];
+
+        /**
+         * Build an SVG cubic-bezier path between two nodes.
+         * Chooses exit/entry direction based on relative positions:
+         *   - Steep vertical: exit bottom/top, enter top/bottom
+         *   - Otherwise: exit right, enter left (follow the LTR flow)
+         */
+        function buildPath(src, tgt) {
+            var hw = NODE_W / 2, hh = NODE_H / 2;
+            var dx = tgt.cx - src.cx;
+            var dy = tgt.cy - src.cy;
+            var x1, y1, x2, y2;
+
+            /* Steep vertical connection */
+            if (Math.abs(dy) > Math.abs(dx) * 3 && Math.abs(dy) > 40) {
+                if (dy > 0) {
+                    x1 = src.cx; y1 = src.cy + hh;
+                    x2 = tgt.cx; y2 = tgt.cy - hh;
+                } else {
+                    x1 = src.cx; y1 = src.cy - hh;
+                    x2 = tgt.cx; y2 = tgt.cy + hh;
+                }
+                var my = (y1 + y2) / 2;
+                return 'M' + x1 + ',' + y1 +
+                       ' C' + x1 + ',' + my + ' ' + x2 + ',' + my + ' ' + x2 + ',' + y2;
+            }
+
+            /* Normal horizontal / diagonal connection */
+            if (dx >= 0) {
+                x1 = src.cx + hw; y1 = src.cy;
+                x2 = tgt.cx - hw; y2 = tgt.cy;
+            } else {
+                x1 = src.cx - hw; y1 = src.cy;
+                x2 = tgt.cx + hw; y2 = tgt.cy;
+            }
+            var cp = Math.max(Math.abs(x2 - x1) * 0.45, 30);
+            if (dx >= 0) {
+                return 'M' + x1 + ',' + y1 +
+                       ' C' + (x1 + cp) + ',' + y1 + ' ' + (x2 - cp) + ',' + y2 + ' ' + x2 + ',' + y2;
+            } else {
+                return 'M' + x1 + ',' + y1 +
+                       ' C' + (x1 - cp) + ',' + y1 + ' ' + (x2 + cp) + ',' + y2 + ' ' + x2 + ',' + y2;
+            }
+        }
+
+        for (var ei = 0; ei < edges.length; ei++) {
+            var e   = edges[ei];
+            var src = nodeMap[e.from];
+            var tgt = nodeMap[e.to];
+
+            var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', buildPath(src, tgt));
+            path.classList.add('edge-path');
+
+            var marker = 'url(#arr)';
+            if (e.type === 'pass') { path.classList.add('pass-edge'); marker = 'url(#arr-g)'; }
+            if (e.type === 'fail') { path.classList.add('fail-edge'); marker = 'url(#arr-r)'; }
+            path.setAttribute('marker-end', marker);
+            path.dataset.from = e.from;
+            path.dataset.to   = e.to;
+
+            svg.appendChild(path);
+            edgeEls.push(path);
+
+            /* Edge label (only for decision branches) */
+            if (e.label) {
+                var mx = (src.cx + tgt.cx) / 2;
+                var my = (src.cy + tgt.cy) / 2;
+
+                /* Perpendicular offset so label doesn't sit on the line */
+                var edx = tgt.cx - src.cx;
+                var edy = tgt.cy - src.cy;
+                var len = Math.sqrt(edx * edx + edy * edy) || 1;
+                var perpX = (-edy / len) * 14;
+                var perpY = ( edx / len) * 14;
+
+                var lx = mx + perpX;
+                var ly = my + perpY;
+
+                var labelColor = (e.type === 'pass') ? '#16a34a' : '#dc2626';
+
+                /* Background rect for readability */
+                var bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                bg.setAttribute('x', lx - 18);
+                bg.setAttribute('y', ly - 9);
+                bg.setAttribute('width', 36);
+                bg.setAttribute('height', 18);
+                bg.setAttribute('rx', 4);
+                bg.setAttribute('fill', '#fff');
+                bg.setAttribute('fill-opacity', '0.88');
+                bg.classList.add('edge-label-bg');
+                svg.appendChild(bg);
+
+                var txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                txt.setAttribute('x', lx);
+                txt.setAttribute('y', ly);
+                txt.setAttribute('text-anchor', 'middle');
+                txt.setAttribute('dominant-baseline', 'central');
+                txt.classList.add('edge-label');
+                txt.setAttribute('fill', labelColor);
+                txt.textContent = e.label;
+                svg.appendChild(txt);
+            }
+        }
+
+        /* ════════════════════ Tooltip ════════════════════ */
+        function showTooltip(node, evt) {
+            var laneInfo = lanes[laneIdx[node.lane]];
+            var roleName = laneInfo.name.replace(/<br>/g, ' ');
+            tooltipEl.innerHTML =
+                '<div class="tip-role">' + laneInfo.abbr + ' \u00b7 ' + roleName + '</div>' +
+                '<div class="tip-title">' + node.label.replace(/<br>/g, ' ') + '</div>' +
+                '<div>' + node.tip + '</div>';
+            tooltipEl.style.display = 'block';
+            positionTooltip(evt);
+        }
+
+        function positionTooltip(evt) {
+            var x = evt.clientX + 18;
+            var y = evt.clientY + 18;
+            var tw = tooltipEl.offsetWidth;
+            var th = tooltipEl.offsetHeight;
+            if (x + tw > window.innerWidth  - 12) { x = evt.clientX - tw - 14; }
+            if (y + th > window.innerHeight - 12) { y = evt.clientY - th - 14; }
+            tooltipEl.style.left = x + 'px';
+            tooltipEl.style.top  = y + 'px';
+        }
+
+        function hideTooltip() {
+            tooltipEl.style.display = 'none';
+        }
+
+        /* ════════════════════ Edge Highlight on Hover ════════════════════ */
+        function highlightConnected(nodeId) {
+            for (var i = 0; i < edgeEls.length; i++) {
+                var p = edgeEls[i];
+                if (p.dataset.from === nodeId || p.dataset.to === nodeId) {
+                    p.classList.add('highlighted');
+                } else {
+                    p.classList.add('dimmed');
+                }
+            }
+        }
+
+        function clearHighlight() {
+            for (var i = 0; i < edgeEls.length; i++) {
+                edgeEls[i].classList.remove('highlighted', 'dimmed');
+            }
+        }
+    })();
+    </script>
+</body>
+</html>
