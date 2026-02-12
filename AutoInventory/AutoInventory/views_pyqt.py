@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QLineEdit, QTextEdit, QComboBox, QScrollArea,
     QListWidget, QListWidgetItem, QFrame, QSplitter, QMessageBox, QFileDialog,
     QDialog, QDialogButtonBox, QSpinBox, QDoubleSpinBox, QGroupBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QTabWidget, QProgressBar, QDateEdit, QInputDialog, QSizePolicy
+    QHeaderView, QTabWidget, QProgressBar, QDateEdit, QInputDialog, QSizePolicy, QCheckBox
 )
 from PyQt5.QtCore import Qt, QSize, pyqtSignal, QThread, QTimer, QDate
 from PyQt5.QtGui import QPixmap, QFont, QColor, QImage
@@ -26,6 +26,7 @@ from adc.controller import ADCController, PRESET_SPECS
 from adc_workflow.models import ADCWorkflow, ADCWorkflowStep, ADCExperimentResult, AppUser
 from adc_workflow.controller import ADCWorkflowController
 from adc_workflow.request_schema import ordered_request_items_for_display
+from adc_workflow import sp_dar8
 from database import (
     load_config, save_config, get_database_list, add_database, 
     remove_database, set_current_database, DatabaseManager
@@ -2683,34 +2684,306 @@ class MainWindow(QMainWindow):
         data = self.workflow_controller.get_feed_table_data(self._current_workflow_id)
         if not data:
             return
+        raw_request = data.get("raw_request") or {}
+        ordered_request = data.get("ordered_request") or []
+
         dlg = QDialog(self)
-        dlg.setWindowTitle("ADC实验流程信息投料表")
-        dlg.setMinimumSize(700, 400)
-        layout = QVBoxLayout()
-        dlg.setLayout(layout)
-        table = QTableWidget()
-        rows = []
-        ordered = data.get("ordered_request")
-        if ordered:
-            rows.extend((str(k), str(v)) for k, v in ordered)
-        else:
-            for k, v in data.get("raw_request", {}).items():
-                if k == "_sheet_name":
-                    continue
-                rows.append((str(k), str(v) if v is not None else ""))
-        for s in data.get("steps", []):
-            rows.append(("步骤-%d" % (s["order"] + 1), s.get("type_name", "")))
-        table.setColumnCount(2)
-        table.setHorizontalHeaderLabels(["项目", "内容"])
-        table.setRowCount(len(rows))
-        for row, (a, b) in enumerate(rows):
-            table.setItem(row, 0, QTableWidgetItem(a))
-            table.setItem(row, 1, QTableWidgetItem(b))
-        table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(table)
-        bbox = QDialogButtonBox(QDialogButtonBox.Ok)
+        dlg.setWindowTitle("ADC实验流程信息投料表 / Setup Param")
+        dlg.setMinimumSize(900, 600)
+        main_layout = QVBoxLayout()
+        dlg.setLayout(main_layout)
+
+        # 顶部：基本信息
+        request_sn = data.get("request_sn") or ""
+        wbp_code = raw_request.get("WBP Code", "")
+        product_id = raw_request.get("Product ID", "")
+        summary_label = QLabel(f"Request SN: {request_sn}    WBP Code: {wbp_code}    Product ID: {product_id}")
+        main_layout.addWidget(summary_label)
+
+        # 中部：三列布局（左：Request 详细；中：SP 输入；右：结果+说明）
+        center_layout = QHBoxLayout()
+        main_layout.addLayout(center_layout, 1)
+
+        # 左列：Request 详细信息（四列表，复用 ADC 实验流程 tab 风格）
+        left_request_widget = QWidget()
+        left_request_layout = QVBoxLayout()
+        left_request_widget.setLayout(left_request_layout)
+        center_layout.addWidget(left_request_widget, 1)
+
+        left_request_layout.addWidget(QLabel("Request 详细信息"))
+        request_detail_table = QTableWidget()
+        request_detail_table.setColumnCount(4)
+        request_detail_table.setHorizontalHeaderLabels(["字段名", "类型", "必填/可选", "值"])
+        from adc_workflow.request_schema import ordered_request_items_for_display
+        request_items = ordered_request_items_for_display(raw_request)
+        request_detail_table.setRowCount(len(request_items))
+        for row, (key, type_str, optional_label, value_str) in enumerate(request_items):
+            def _center_item(text: str) -> QTableWidgetItem:
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter)
+                return item
+            request_detail_table.setItem(row, 0, _center_item(key))
+            request_detail_table.setItem(row, 1, _center_item(type_str))
+            request_detail_table.setItem(row, 2, _center_item(optional_label))
+            value_item = QTableWidgetItem(value_str)
+            value_item.setTextAlignment(Qt.AlignCenter)
+            if value_str == "null":
+                value_item.setForeground(QColor("#6c757d"))
+                f = value_item.font()
+                f.setItalic(True)
+                value_item.setFont(f)
+            request_detail_table.setItem(row, 3, value_item)
+        request_detail_table.horizontalHeader().setStretchLastSection(True)
+        left_request_layout.addWidget(request_detail_table)
+
+        # 中列：SP 类型选择 + DAR8 输入
+        middle_widget = QWidget()
+        middle_layout = QVBoxLayout()
+        middle_widget.setLayout(middle_layout)
+        center_layout.addWidget(middle_widget, 1)
+
+        # SP 类型选择
+        sp_type_layout = QHBoxLayout()
+        sp_type_label = QLabel("Setup Param 类型:")
+        sp_type_combo = QComboBox()
+        sp_type_combo.addItems(["DAR8", "DAR4", "Deblocking", "Thiomab"])
+        sp_type_layout.addWidget(sp_type_label)
+        sp_type_layout.addWidget(sp_type_combo)
+        middle_layout.addLayout(sp_type_layout)
+
+        # DAR8 输入区
+        dar8_group = QGroupBox("DAR8 Setup Param 输入")
+        dar8_form = QGridLayout()
+        dar8_group.setLayout(dar8_form)
+
+        row = 0
+
+        def _add_spin(label_text, default, minimum, maximum, step=0.1):
+            nonlocal row
+            label = QLabel(label_text)
+            spin = QDoubleSpinBox()
+            spin.setRange(minimum, maximum)
+            spin.setSingleStep(step)
+            spin.setValue(default)
+            dar8_form.addWidget(label, row, 0)
+            dar8_form.addWidget(spin, row, 1)
+            row += 1
+            return spin
+
+        tcep_eq_spin = _add_spin("TCEP 当量:", 8.0, 0.0, 1000.0, 0.1)
+        tcep_stock_spin = _add_spin("TCEP stock (mM):", 8.0, 0.0, 1000.0, 0.1)
+        ratio_spin = _add_spin("Conjugation organic solvent ratio (%):", 0.0, 0.0, 100.0, 1.0)
+        xlp_spin = _add_spin("x LP/Ab:", 12.0, 0.0, 1000.0, 0.5)
+
+        # 可选输入：checkbox + spin
+        def _add_optional_spin(label_text):
+            nonlocal row
+            cb = QCheckBox(label_text)
+            spin = QDoubleSpinBox()
+            spin.setRange(0.0, 1000.0)
+            spin.setSingleStep(0.5)
+            spin.setEnabled(False)
+            def _on_cb_changed(state):
+                spin.setEnabled(state == Qt.Checked)
+            cb.stateChanged.connect(_on_cb_changed)
+            dar8_form.addWidget(cb, row, 0)
+            dar8_form.addWidget(spin, row, 1)
+            row += 1
+            return cb, spin
+
+        add_tcep_cb, add_tcep_spin = _add_optional_spin("Add additional TCEP (eq):")
+        add_lp_cb, add_lp_spin = _add_optional_spin("Add additional LP:")
+        add_time_cb, add_time_spin = _add_optional_spin("Additional reaction time (h):")
+
+        # Reaction status
+        status_label = QLabel("Reaction status:")
+        status_combo = QComboBox()
+        status_combo.addItems(["", "clear", "cloudy", "precipitate"])
+        dar8_form.addWidget(status_label, row, 0)
+        dar8_form.addWidget(status_combo, row, 1)
+        row += 1
+
+        # 重新计算按钮
+        recalc_btn = QPushButton("重新计算 DAR8 参数")
+        dar8_form.addWidget(recalc_btn, row, 0, 1, 2)
+        row += 1
+
+        middle_layout.addWidget(dar8_group)
+
+        # 右列：SP 结果表 + 说明
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+        right_widget.setLayout(right_layout)
+        center_layout.addWidget(right_widget, 1)
+
+        result_table = QTableWidget()
+        result_table.setColumnCount(2)
+        result_table.setHorizontalHeaderLabels(["名称", "数值"])
+        result_table.horizontalHeader().setStretchLastSection(True)
+        right_layout.addWidget(QLabel("Setup Param 结果"))
+        right_layout.addWidget(result_table, 3)
+
+        explain_label = QLabel("计算过程说明")
+        explain_text = QTextEdit()
+        explain_text.setReadOnly(True)
+        explain_text.setMinimumHeight(160)
+        right_layout.addWidget(explain_label)
+        right_layout.addWidget(explain_text, 2)
+
+        # 底部按钮
+        bbox = QDialogButtonBox(QDialogButtonBox.Close)
+        bbox.rejected.connect(dlg.reject)
         bbox.accepted.connect(dlg.accept)
-        layout.addWidget(bbox)
+        main_layout.addWidget(bbox)
+
+        # ------ 内部状态与工具 ------
+        dar8_meta = sp_dar8.get_dar8_field_meta_dict()
+        dar8_fields = sp_dar8.DAR8_FIELDS
+        current_result = None
+        row_by_key: Dict[str, int] = {}
+
+        def _collect_user_inputs() -> Dict[str, Any]:
+            inputs = {
+                "tcep_eq": tcep_eq_spin.value(),
+                "tcep_stock_mM": tcep_stock_spin.value(),
+                "conj_org_ratio_percent": ratio_spin.value(),
+                "x_lp_per_ab": xlp_spin.value(),
+            }
+            if add_tcep_cb.isChecked():
+                inputs["add_additional_tcep_eq"] = add_tcep_spin.value()
+            if add_lp_cb.isChecked():
+                inputs["add_additional_lp"] = add_lp_spin.value()
+            if add_time_cb.isChecked():
+                inputs["additional_reaction_time_h"] = add_time_spin.value()
+            status = status_combo.currentText().strip()
+            if status:
+                inputs["reaction_status"] = status
+            return inputs
+
+        def _format_value(v: Any) -> str:
+            from adc_workflow.sp_core import format_number
+            return format_number(v, digits=3)
+
+        def _refresh_result_table():
+            nonlocal current_result, row_by_key
+            user_inputs = _collect_user_inputs()
+            current_result = sp_dar8.calculate_dar8_sp(raw_request, user_inputs)
+            # 按 group 分块排序
+            ordered = sorted(dar8_fields, key=lambda f: (f.group, f.display_name.lower()))
+            result_table.setRowCount(len(ordered))
+            row_by_key = {}
+            for row_idx, fmeta in enumerate(ordered):
+                key = fmeta.key
+                val = current_result.get_value(key)
+                name_item = QTableWidgetItem(
+                    fmeta.display_name + (f" ({fmeta.unit})" if fmeta.unit else "")
+                )
+                name_item.setData(Qt.UserRole, key)
+                value_str = _format_value(val) if fmeta.data_type in ("float", "optional_float") else ("" if val is None else str(val))
+                value_item = QTableWidgetItem(value_str)
+                name_item.setTextAlignment(Qt.AlignCenter)
+                value_item.setTextAlignment(Qt.AlignCenter)
+                # 重要字段背景色
+                if fmeta.is_important:
+                    name_item.setBackground(QColor("#fff3cd"))  # 淡黄色
+                    value_item.setBackground(QColor("#fff3cd"))
+                result_table.setItem(row_idx, 0, name_item)
+                result_table.setItem(row_idx, 1, value_item)
+                row_by_key[key] = row_idx
+
+        def _reset_highlight():
+            rows = result_table.rowCount()
+            cols = result_table.columnCount()
+            for r in range(rows):
+                for c in range(cols):
+                    item = result_table.item(r, c)
+                    if not item:
+                        continue
+                    # 先重置为白色
+                    item.setBackground(QColor(Qt.white))
+            # 重新应用重要字段底色
+            for key, r in row_by_key.items():
+                fmeta = dar8_meta.get(key)
+                if not fmeta or not fmeta.is_important:
+                    continue
+                for c in range(result_table.columnCount()):
+                    item = result_table.item(r, c)
+                    if item:
+                        item.setBackground(QColor("#fff3cd"))
+
+        def _on_result_cell_clicked(row_idx: int, column: int):
+            if current_result is None:
+                return
+            item = result_table.item(row_idx, 0)
+            if not item:
+                return
+            key = item.data(Qt.UserRole)
+            if not key:
+                return
+            fmeta = dar8_meta.get(key)
+            if not fmeta:
+                return
+            value = current_result.get_value(key)
+            # 文字说明
+            lines = []
+            title = f"{fmeta.display_name}"
+            if fmeta.unit:
+                title += f" ({fmeta.unit})"
+            lines.append(f"字段：{title}")
+            lines.append(f"当前值：{_format_value(value) if fmeta.data_type in ('float', 'optional_float') else ('' if value is None else str(value))}")
+            lines.append(f"数据来源：{fmeta.source}")
+            if fmeta.description:
+                lines.append(f"说明：{fmeta.description}")
+            if fmeta.formula_text:
+                lines.append(f"公式：{fmeta.formula_text}")
+            if fmeta.depends_on:
+                lines.append("依赖字段：")
+                for dep_key in fmeta.depends_on:
+                    dep_meta = dar8_meta.get(dep_key)
+                    dep_val = current_result.get_value(dep_key)
+                    dep_name = dep_meta.display_name if dep_meta else dep_key
+                    dep_unit = f" ({dep_meta.unit})" if dep_meta and dep_meta.unit else ""
+                    dep_str = _format_value(dep_val) if isinstance(dep_val, (int, float)) or dep_val is None else str(dep_val)
+                    lines.append(f"  - {dep_name}{dep_unit} = {dep_str}")
+            else:
+                lines.append("该字段为原始输入或固定值，无上游依赖。")
+            explain_text.setPlainText("\n".join(lines))
+
+            # 高亮当前字段与依赖字段
+            _reset_highlight()
+            # 当前字段行：淡绿色
+            for c in range(result_table.columnCount()):
+                it = result_table.item(row_idx, c)
+                if it:
+                    it.setBackground(QColor("#d4edda"))
+            # 依赖字段行：淡蓝色
+            for dep_key in fmeta.depends_on:
+                dep_row = row_by_key.get(dep_key)
+                if dep_row is None:
+                    continue
+                for c in range(result_table.columnCount()):
+                    it = result_table.item(dep_row, c)
+                    if it:
+                        it.setBackground(QColor("#d1ecf1"))
+
+        result_table.cellClicked.connect(_on_result_cell_clicked)
+        recalc_btn.clicked.connect(_refresh_result_table)
+
+        # SP 类型切换逻辑：目前仅实现 DAR8，其它类型仅提示
+        def _on_sp_type_changed(index: int):
+            sp_type = sp_type_combo.currentText()
+            enabled = sp_type == "DAR8"
+            dar8_group.setEnabled(enabled)
+            result_table.setEnabled(enabled)
+            explain_text.setEnabled(enabled)
+            if not enabled:
+                explain_text.setPlainText("当前仅支持 DAR8 类型的 Setup Param 计算。")
+
+        sp_type_combo.currentIndexChanged.connect(_on_sp_type_changed)
+        _on_sp_type_changed(sp_type_combo.currentIndex())
+
+        # 首次打开时自动计算一次
+        _refresh_result_table()
         dlg.exec_()
     
     def _workflow_add_result(self):

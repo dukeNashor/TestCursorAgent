@@ -19,6 +19,7 @@ from .repository import (
     PURIFICATION_METHOD_KEY,
 )
 from .request_schema import ordered_request_items, coerce_request_values
+from . import sp_dar8
 
 
 class ADCWorkflowController:
@@ -180,6 +181,29 @@ class ADCWorkflowController:
             "ordered_request": ordered_request_items(raw),
             "purification_flow_string": w.purification_flow_string,
             "steps": steps,
+        }
+
+    def get_dar8_request_inputs(self, workflow_id: int) -> Optional[Dict[str, Any]]:
+        """
+        便捷方法：从指定 workflow 中获取 DAR8 所需的 Request 输入上下文。
+
+        返回字典中至少包含：
+        - raw_request: 原始 Request 键值对
+        - dar8_request_inputs: build_dar8_inputs_from_request 的结果
+        """
+        w = self.get_workflow_by_id(workflow_id)
+        if not w:
+            return None
+        try:
+            raw = json.loads(w.raw_request_json) if w.raw_request_json else {}
+        except Exception:
+            raw = {}
+        dar8_inputs = sp_dar8.build_dar8_inputs_from_request(raw)
+        return {
+            "workflow_id": w.id,
+            "request_sn": w.request_sn,
+            "raw_request": raw,
+            "dar8_request_inputs": dar8_inputs,
         }
 
     def add_experiment_result(self, workflow_id: int, created_by_user_id: int,
