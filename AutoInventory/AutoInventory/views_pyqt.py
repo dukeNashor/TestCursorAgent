@@ -2690,15 +2690,103 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("ADC实验流程信息投料表 / Setup Param")
         dlg.setMinimumSize(900, 600)
+
+        # 统一浅色现代风格样式
+        dlg.setStyleSheet("""
+            QDialog {
+                background-color: #f5f7fb;
+            }
+            QGroupBox {
+                background-color: #ffffff;
+                border: 1px solid #d0d7e2;
+                border-radius: 6px;
+                margin-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                color: #34495e;
+                font-weight: bold;
+            }
+            QTableWidget {
+                background-color: #ffffff;
+                gridline-color: #e1e4eb;
+                selection-background-color: #dbeafe;
+                selection-color: #1f2933;
+                alternate-background-color: #f8fafc;
+            }
+            QHeaderView::section {
+                background-color: #edf2ff;
+                color: #34495e;
+                padding: 4px;
+                border: 1px solid #d0d7e2;
+                font-weight: bold;
+            }
+            QPushButton {
+                background-color: #2d7ff9;
+                color: #ffffff;
+                border-radius: 4px;
+                padding: 4px 10px;
+            }
+            QPushButton:disabled {
+                background-color: #cfd8e3;
+                color: #7b8794;
+            }
+            QPushButton:hover:!disabled {
+                background-color: #1f6fe0;
+            }
+            QDialogButtonBox QPushButton {
+                min-width: 80px;
+                background-color: #ffffff;
+                color: #1f2933;
+                border: 1px solid #d0d7e2;
+            }
+            QDialogButtonBox QPushButton:hover {
+                background-color: #f0f4ff;
+            }
+        """)
+
         main_layout = QVBoxLayout()
         dlg.setLayout(main_layout)
 
-        # 顶部：基本信息
+        # 顶部：基本信息卡片
         request_sn = data.get("request_sn") or ""
         wbp_code = raw_request.get("WBP Code", "")
         product_id = raw_request.get("Product ID", "")
-        summary_label = QLabel(f"Request SN: {request_sn}    WBP Code: {wbp_code}    Product ID: {product_id}")
-        main_layout.addWidget(summary_label)
+        summary_frame = QFrame()
+        summary_frame.setFrameShape(QFrame.StyledPanel)
+        summary_frame.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #d0d7e2;
+                border-radius: 8px;
+            }
+        """)
+        summary_layout = QGridLayout()
+        summary_frame.setLayout(summary_layout)
+        title_label = QLabel("ADC 实验流程投料表 - DAR8 Setup Param")
+        t_font = title_label.font()
+        t_font.setPointSize(t_font.pointSize() + 1)
+        t_font.setBold(True)
+        title_label.setFont(t_font)
+        summary_layout.addWidget(title_label, 0, 0, 1, 2)
+
+        def _add_summary_row(r: int, name: str, value: str) -> None:
+            name_label = QLabel(name)
+            name_label.setStyleSheet("color: #6b7280;")
+            value_label = QLabel(value)
+            v_font = value_label.font()
+            v_font.setBold(True)
+            value_label.setFont(v_font)
+            summary_layout.addWidget(name_label, r, 0)
+            summary_layout.addWidget(value_label, r, 1)
+
+        _add_summary_row(1, "Request SN:", str(request_sn))
+        _add_summary_row(2, "WBP Code:", str(wbp_code))
+        _add_summary_row(3, "Product ID:", str(product_id))
+
+        main_layout.addWidget(summary_frame)
 
         # 中部：三列布局（左：Request 详细；中：SP 输入；右：结果+说明）
         center_layout = QHBoxLayout()
@@ -2710,7 +2798,7 @@ class MainWindow(QMainWindow):
         left_request_widget.setLayout(left_request_layout)
         center_layout.addWidget(left_request_widget, 1)
 
-        left_request_layout.addWidget(QLabel("Request 详细信息"))
+        left_request_layout.addWidget(QLabel("Request 输入（来自偶联任务）"))
         request_detail_table = QTableWidget()
         request_detail_table.setColumnCount(4)
         request_detail_table.setHorizontalHeaderLabels(["字段名", "类型", "必填/可选", "值"])
@@ -2734,6 +2822,7 @@ class MainWindow(QMainWindow):
                 value_item.setFont(f)
             request_detail_table.setItem(row, 3, value_item)
         request_detail_table.horizontalHeader().setStretchLastSection(True)
+        request_detail_table.setAlternatingRowColors(True)
         left_request_layout.addWidget(request_detail_table)
 
         # 中列：SP 类型选择 + DAR8 输入
@@ -2752,7 +2841,7 @@ class MainWindow(QMainWindow):
         middle_layout.addLayout(sp_type_layout)
 
         # DAR8 输入区
-        dar8_group = QGroupBox("DAR8 Setup Param 输入")
+        dar8_group = QGroupBox("DAR8 Setup Param 输入（用户输入）")
         dar8_form = QGridLayout()
         dar8_group.setLayout(dar8_form)
 
@@ -2805,7 +2894,14 @@ class MainWindow(QMainWindow):
 
         # 重新计算按钮
         recalc_btn = QPushButton("重新计算 DAR8 参数")
+        recalc_btn.setToolTip("根据当前所有用户输入重新计算右侧的 DAR8 Setup Param 结果。")
         dar8_form.addWidget(recalc_btn, row, 0, 1, 2)
+        row += 1
+
+        # 底部提示
+        hint_label = QLabel("提示：修改任意输入参数后，点击上方按钮以刷新右侧结果与计算说明。")
+        hint_label.setStyleSheet("color: #6b7280;")
+        dar8_form.addWidget(hint_label, row, 0, 1, 2)
         row += 1
 
         middle_layout.addWidget(dar8_group)
@@ -2830,6 +2926,28 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(explain_label)
         right_layout.addWidget(explain_text, 2)
 
+        # 底部图例：解释不同颜色/分组含义
+        legend_layout = QHBoxLayout()
+        legend_layout.addStretch(1)
+        def _legend_item(color: str, text: str) -> QWidget:
+            w = QWidget()
+            lay = QHBoxLayout()
+            lay.setContentsMargins(0, 0, 0, 0)
+            w.setLayout(lay)
+            box = QFrame()
+            box.setFixedSize(14, 14)
+            box.setStyleSheet(f"background-color: {color}; border: 1px solid #cbd5e1; border-radius: 3px;")
+            lbl = QLabel(text)
+            lbl.setStyleSheet("color: #6b7280;")
+            lay.addWidget(box)
+            lay.addWidget(lbl)
+            return w
+        legend_layout.addWidget(_legend_item("#e5e7eb", "Request 输入"))
+        legend_layout.addWidget(_legend_item("#e6f4ea", "用户输入（回显）"))
+        legend_layout.addWidget(_legend_item("#fff8e1", "Reduction 输出"))
+        legend_layout.addWidget(_legend_item("#e3f2fd", "Conjugation 输出"))
+        right_layout.addLayout(legend_layout)
+
         # 底部按钮
         bbox = QDialogButtonBox(QDialogButtonBox.Close)
         bbox.rejected.connect(dlg.reject)
@@ -2841,6 +2959,7 @@ class MainWindow(QMainWindow):
         dar8_fields = sp_dar8.DAR8_FIELDS
         current_result = None
         row_by_key: Dict[str, int] = {}
+        row_base_color: Dict[int, QColor] = {}
 
         def _collect_user_inputs() -> Dict[str, Any]:
             inputs = {
@@ -2865,31 +2984,83 @@ class MainWindow(QMainWindow):
             return format_number(v, digits=3)
 
         def _refresh_result_table():
-            nonlocal current_result, row_by_key
+            nonlocal current_result, row_by_key, row_base_color
             user_inputs = _collect_user_inputs()
             current_result = sp_dar8.calculate_dar8_sp(raw_request, user_inputs)
-            # 按 group 分块排序
-            ordered = sorted(dar8_fields, key=lambda f: (f.group, f.display_name.lower()))
-            result_table.setRowCount(len(ordered))
+            # 按分组构建分节行
+            sections = [
+                ("input_request", "Request 输入", QColor("#e5e7eb")),
+                ("input_user", "用户输入（回显）", QColor("#e6f4ea")),
+                ("output_reduction", "Antibody Reduction 输出", QColor("#fff8e1")),
+                ("output_conjugation", "Antibody Conjugation 输出", QColor("#e3f2fd")),
+                ("meta", "元数据", QColor("#f3f4f6")),
+            ]
+            fields_by_group: Dict[str, list] = {}
+            for f in dar8_fields:
+                fields_by_group.setdefault(f.group, []).append(f)
+            for g in fields_by_group.values():
+                g.sort(key=lambda f: f.display_name.lower())
+
+            rows_items = []
+            for group_key, group_title, color in sections:
+                group_fields = fields_by_group.get(group_key, [])
+                if not group_fields:
+                    continue
+                rows_items.append(("header", group_title, group_key, color, None))
+                for fmeta in group_fields:
+                    rows_items.append(("field", fmeta, group_key, color, fmeta.key))
+
+            result_table.setRowCount(len(rows_items))
             row_by_key = {}
-            for row_idx, fmeta in enumerate(ordered):
-                key = fmeta.key
-                val = current_result.get_value(key)
-                name_item = QTableWidgetItem(
-                    fmeta.display_name + (f" ({fmeta.unit})" if fmeta.unit else "")
-                )
-                name_item.setData(Qt.UserRole, key)
-                value_str = _format_value(val) if fmeta.data_type in ("float", "optional_float") else ("" if val is None else str(val))
-                value_item = QTableWidgetItem(value_str)
-                name_item.setTextAlignment(Qt.AlignCenter)
-                value_item.setTextAlignment(Qt.AlignCenter)
-                # 重要字段背景色
-                if fmeta.is_important:
-                    name_item.setBackground(QColor("#fff3cd"))  # 淡黄色
-                    value_item.setBackground(QColor("#fff3cd"))
-                result_table.setItem(row_idx, 0, name_item)
-                result_table.setItem(row_idx, 1, value_item)
-                row_by_key[key] = row_idx
+            row_base_color = {}
+            for row_idx, item in enumerate(rows_items):
+                kind, payload, group_key, base_color, key = item
+                if kind == "header":
+                    header_item = QTableWidgetItem(str(payload))
+                    header_item.setFlags(header_item.flags() & ~Qt.ItemIsSelectable & ~Qt.ItemIsEditable)
+                    h_font = header_item.font()
+                    h_font.setBold(True)
+                    header_item.setFont(h_font)
+                    header_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    header_item.setBackground(base_color)
+                    result_table.setItem(row_idx, 0, header_item)
+                    empty_item = QTableWidgetItem("")
+                    empty_item.setFlags(empty_item.flags() & ~Qt.ItemIsSelectable & ~Qt.ItemIsEditable)
+                    empty_item.setBackground(base_color)
+                    result_table.setItem(row_idx, 1, empty_item)
+                    row_base_color[row_idx] = base_color
+                else:
+                    fmeta: Any = payload
+                    val = current_result.get_value(fmeta.key)
+                    display_name = fmeta.display_name + (f" ({fmeta.unit})" if fmeta.unit else "")
+                    name_item = QTableWidgetItem(display_name)
+                    name_item.setData(Qt.UserRole, fmeta.key)
+                    # tooltip 展示公式或说明
+                    tip_parts = [display_name]
+                    if fmeta.description:
+                        tip_parts.append(fmeta.description)
+                    if fmeta.formula_text:
+                        tip_parts.append(f"公式: {fmeta.formula_text}")
+                    name_item.setToolTip("\n".join(tip_parts))
+                    value_str = _format_value(val) if fmeta.data_type in ("float", "optional_float") else ("" if val is None else str(val))
+                    value_item = QTableWidgetItem(value_str)
+                    name_item.setTextAlignment(Qt.AlignCenter)
+                    value_item.setTextAlignment(Qt.AlignCenter)
+                    # 分组底色
+                    cell_color = QColor(base_color)
+                    if fmeta.is_important and group_key == "output_reduction":
+                        cell_color = QColor("#ffe8a1")
+                    name_item.setBackground(cell_color)
+                    value_item.setBackground(cell_color)
+                    if fmeta.is_important:
+                        f_font = name_item.font()
+                        f_font.setBold(True)
+                        name_item.setFont(f_font)
+                        value_item.setFont(f_font)
+                    result_table.setItem(row_idx, 0, name_item)
+                    result_table.setItem(row_idx, 1, value_item)
+                    row_by_key[fmeta.key] = row_idx
+                    row_base_color[row_idx] = cell_color
 
         def _reset_highlight():
             rows = result_table.rowCount()
@@ -2899,17 +3070,10 @@ class MainWindow(QMainWindow):
                     item = result_table.item(r, c)
                     if not item:
                         continue
-                    # 先重置为白色
-                    item.setBackground(QColor(Qt.white))
-            # 重新应用重要字段底色
-            for key, r in row_by_key.items():
-                fmeta = dar8_meta.get(key)
-                if not fmeta or not fmeta.is_important:
-                    continue
-                for c in range(result_table.columnCount()):
-                    item = result_table.item(r, c)
-                    if item:
-                        item.setBackground(QColor("#fff3cd"))
+                    # 恢复为基础底色
+                    base = row_base_color.get(r)
+                    if base is not None:
+                        item.setBackground(base)
 
         def _on_result_cell_clicked(row_idx: int, column: int):
             if current_result is None:
@@ -2926,10 +3090,26 @@ class MainWindow(QMainWindow):
             value = current_result.get_value(key)
             # 文字说明
             lines = []
+            # 分组前缀
+            group_prefix = ""
+            if fmeta.group == "input_request":
+                group_prefix = "【Request 输入】"
+            elif fmeta.group == "input_user":
+                group_prefix = "【用户输入】"
+            elif fmeta.group == "output_reduction":
+                group_prefix = "【Reduction 输出】"
+            elif fmeta.group == "output_conjugation":
+                group_prefix = "【Conjugation 输出】"
+            elif fmeta.group == "meta":
+                group_prefix = "【元数据】"
+
             title = f"{fmeta.display_name}"
             if fmeta.unit:
                 title += f" ({fmeta.unit})"
-            lines.append(f"字段：{title}")
+            if group_prefix:
+                lines.append(f"{group_prefix} 字段：{title}")
+            else:
+                lines.append(f"字段：{title}")
             lines.append(f"当前值：{_format_value(value) if fmeta.data_type in ('float', 'optional_float') else ('' if value is None else str(value))}")
             lines.append(f"数据来源：{fmeta.source}")
             if fmeta.description:
