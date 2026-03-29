@@ -1,0 +1,4 @@
+interface:
+  display_name: "Init Codex Repo"
+  short_description: "Initialize, generate, or inspect Codex repo docs safely"
+  default_prompt: "Collect python_executable and target_path. Route intent: initialize -> init_codex_repo.py, architecture/features generation -> generate_repo_docs.py, inspect -> codex_repo_viewer.py. Always preview first with --dry-run and use overwrite ask before always/never conflict resolution."
