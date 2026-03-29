@@ -12,13 +12,16 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.ticker import PercentFormatter
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
 from PyQt6.QtCore import QDate, Qt
-from PyQt6.QtGui import QColor, QFont, QPalette
+from PyQt6.QtGui import QBrush, QColor, QFont, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
     QDateEdit,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -47,17 +50,140 @@ COL_RESEARCHER_E = 4
 COL_START_AF = 31
 COL_END_AG = 32
 COL_SCORE_AI = 34
+HEADER_ROW_1 = 2
+HEADER_ROW_2 = 3
+HEADER_NEW_EMPLOYEE = "是否新人"
+HEADER_REQUEST_ACTIVITY = "requestactivity"
+UNKNOWN_STAGE = "Unknown"
+NON_OTHER_PLACEHOLDER = "请选择FCT偶联类型"
+NON_OTHER_REQUIRED_MESSAGE = "请先在筛选器中选择一个FCT偶联类型。"
+NO_WIP_MESSAGE = "无在研负载"
+MAPPING_DIALOG_TITLE = "手动匹配列"
+
+FIELD_COUPLING_TYPE = "coupling_type"
+FIELD_WBP_CODE = "wbp_code"
+FIELD_PRODUCT_ID = "product_id"
+FIELD_RESEARCHER = "researcher"
+FIELD_START_DATE = "start_date"
+FIELD_END_DATE = "end_date"
+FIELD_SCORE = "score"
+FIELD_NEW_EMPLOYEE = "new_employee"
+FIELD_REQUEST_ACTIVITY = "request_activity"
+
+REQUIRED_FIELDS = (
+    FIELD_COUPLING_TYPE,
+    FIELD_WBP_CODE,
+    FIELD_PRODUCT_ID,
+    FIELD_RESEARCHER,
+    FIELD_START_DATE,
+    FIELD_END_DATE,
+    FIELD_SCORE,
+    FIELD_NEW_EMPLOYEE,
+    FIELD_REQUEST_ACTIVITY,
+)
+
+FIELD_LABELS = {
+    FIELD_COUPLING_TYPE: "偶联类型(A)",
+    FIELD_WBP_CODE: "WBP Code(C)",
+    FIELD_PRODUCT_ID: "Product ID(D)",
+    FIELD_RESEARCHER: "实验员(E)",
+    FIELD_START_DATE: "起始日期(AF)",
+    FIELD_END_DATE: "完成日期(AG)",
+    FIELD_SCORE: "积分(AI)",
+    FIELD_NEW_EMPLOYEE: "是否新人",
+    FIELD_REQUEST_ACTIVITY: "Request activity",
+}
+
+DEFAULT_FIXED_COLUMN_MAPPING = {
+    FIELD_COUPLING_TYPE: COL_COUPLING_A,
+    FIELD_WBP_CODE: COL_WBP_C,
+    FIELD_PRODUCT_ID: COL_PRODUCT_D,
+    FIELD_RESEARCHER: COL_RESEARCHER_E,
+    FIELD_START_DATE: COL_START_AF,
+    FIELD_END_DATE: COL_END_AG,
+    FIELD_SCORE: COL_SCORE_AI,
+}
 
 
 @dataclass
 class FilterState:
     start_date: date
     end_date: date
-    date_basis: str  # completion_priority / completion_date / start_date
     researcher: str
     wbp_code: str
     product_id: str
     saturation_threshold: int
+    non_other_coupling_type: str
+
+
+class ColumnMappingCancelledError(Exception):
+    pass
+
+
+class ColumnMappingDialog(QDialog):
+    def __init__(
+        self,
+        parent: QWidget | None,
+        candidates: list[dict[str, Any]],
+        initial_mapping: dict[str, int | None],
+    ) -> None:
+        super().__init__(parent)
+        self._combos: dict[str, QComboBox] = {}
+        self.setWindowTitle(MAPPING_DIALOG_TITLE)
+        self.resize(900, 420)
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "自动匹配列失败。请为以下必需字段手动选择对应列。\n"
+            "确认后的映射会在本次程序运行期间作为默认值复用。"
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel("字段"), 0, 0)
+        grid.addWidget(QLabel("Excel列"), 0, 1)
+
+        for row_idx, field in enumerate(REQUIRED_FIELDS, start=1):
+            label = QLabel(FIELD_LABELS[field])
+            combo = QComboBox()
+            combo.addItem("请选择列", userData=None)
+            for candidate in candidates:
+                combo.addItem(candidate["option_text"], userData=candidate["index"])
+
+            initial_idx = initial_mapping.get(field)
+            combo_idx = combo.findData(initial_idx)
+            combo.setCurrentIndex(combo_idx if combo_idx >= 0 else 0)
+
+            self._combos[field] = combo
+            grid.addWidget(label, row_idx, 0)
+            grid.addWidget(combo, row_idx, 1)
+
+        layout.addLayout(grid)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_mapping(self) -> dict[str, int | None]:
+        return {field: combo.currentData() for field, combo in self._combos.items()}
+
+    def _validate_and_accept(self) -> None:
+        mapping = self.selected_mapping()
+        missing = [FIELD_LABELS[field] for field, idx in mapping.items() if idx is None]
+        if missing:
+            QMessageBox.warning(self, "缺少列", f"请先为以下字段选择列：\n{', '.join(missing)}")
+            return
+
+        indices = [int(idx) for idx in mapping.values() if idx is not None]
+        if len(indices) != len(set(indices)):
+            QMessageBox.warning(self, "列重复", "每个字段必须对应不同的列，请不要重复选择同一列。")
+            return
+
+        self.accept()
 
 
 class LabKPIDashboard(QMainWindow):
@@ -66,6 +192,7 @@ class LabKPIDashboard(QMainWindow):
         self.df_raw = pd.DataFrame()
         self.df_working = pd.DataFrame()
         self.chart_payloads: dict[str, Any] = {}
+        self.session_column_mapping_defaults: dict[str, int] = {}
 
         self.setWindowTitle(APP_TITLE)
         self.resize(1520, 920)
@@ -236,7 +363,7 @@ class LabKPIDashboard(QMainWindow):
         title = QLabel("Lab Productivity Navigator")
         title.setObjectName("heroTitle")
         subtitle = QLabel(
-            "外链读取 xlsx（不改动原表 A~AI），按指定起止日期分析在研负载、积分、FTE 与人效。"
+            "外链读取 xlsx（不改动原表），按闭区间起止日期分析任务排期、积分、FTE 与人效。"
         )
         subtitle.setObjectName("heroSub")
         hero_layout.addWidget(title)
@@ -293,11 +420,6 @@ class LabKPIDashboard(QMainWindow):
         self.end_date_edit.setCalendarPopup(True)
         self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
 
-        self.date_basis_combo = QComboBox()
-        self.date_basis_combo.addItem("完成优先", userData="completion_priority")
-        self.date_basis_combo.addItem("完成日期", userData="completion_date")
-        self.date_basis_combo.addItem("起始日期", userData="start_date")
-
         self.saturation_spin = QSpinBox()
         self.saturation_spin.setRange(1, 200)
         self.saturation_spin.setValue(8)
@@ -305,13 +427,17 @@ class LabKPIDashboard(QMainWindow):
         self.researcher_combo = QComboBox()
         self.researcher_combo.addItem("全部")
 
+        self.non_other_combo = QComboBox()
+        self.non_other_combo.addItem(NON_OTHER_PLACEHOLDER, userData="")
+        self.non_other_combo.currentIndexChanged.connect(self._on_non_other_changed)
+
         self.wbp_edit = QLineEdit()
         self.wbp_edit.setPlaceholderText("精确匹配，例如 WBP-001")
 
         self.product_edit = QLineEdit()
         self.product_edit.setPlaceholderText("精确匹配，例如 PID-123")
 
-        self.period_badge = QLabel("时间段: -")
+        self.period_badge = QLabel("时间段(闭区间): -")
         self.period_badge.setObjectName("periodBadge")
 
         apply_btn = QPushButton("应用筛选并刷新")
@@ -328,18 +454,18 @@ class LabKPIDashboard(QMainWindow):
         filter_grid.addWidget(QLabel("结束日期"), 0, 5)
         filter_grid.addWidget(self.end_date_edit, 0, 6)
 
-        filter_grid.addWidget(QLabel("统计日期口径"), 1, 0)
-        filter_grid.addWidget(self.date_basis_combo, 1, 1)
-        filter_grid.addWidget(QLabel("在研饱和阈值"), 1, 2)
-        filter_grid.addWidget(self.saturation_spin, 1, 3)
-        filter_grid.addWidget(QLabel("实验员筛选"), 1, 4)
-        filter_grid.addWidget(self.researcher_combo, 1, 5)
+        filter_grid.addWidget(QLabel("在研饱和阈值"), 1, 0)
+        filter_grid.addWidget(self.saturation_spin, 1, 1)
+        filter_grid.addWidget(QLabel("实验员筛选"), 1, 2)
+        filter_grid.addWidget(self.researcher_combo, 1, 3)
         filter_grid.addWidget(self.period_badge, 1, 6)
 
         filter_grid.addWidget(QLabel("WBP Code"), 2, 0)
         filter_grid.addWidget(self.wbp_edit, 2, 1)
         filter_grid.addWidget(QLabel("Product ID"), 2, 2)
         filter_grid.addWidget(self.product_edit, 2, 3)
+        filter_grid.addWidget(QLabel("FCT偶联类型"), 2, 4)
+        filter_grid.addWidget(self.non_other_combo, 2, 5)
         filter_grid.addWidget(apply_btn, 2, 6)
 
         control_layout.addWidget(file_group)
@@ -373,31 +499,27 @@ class LabKPIDashboard(QMainWindow):
 
         self.detail_table = self._add_table_tab(
             "0. 筛选明细",
-            "按当前筛选条件列出相关条目，便于核查。",
+            "按当前筛选条件列出相关条目，包含阶段、新人标记与交付判定辅助列。",
         )
         self.wip_table = self._add_table_tab(
-            "1. 在研负载",
-            "每个实验员未完成分子数（Unique C|D）以及是否可接收新任务。",
+            "1. 任务排期",
+            "每个实验员当前在研的未完成分子数（Unique C|D）以及是否可接收新任务；该页不受筛选时间段影响。",
         )
         self.score_table = self._add_table_tab(
             "2. 实验员积分",
             "按选定时间段 + 可选筛选条件，统计实验员积分。",
         )
-        self.type_table = self._add_table_tab(
-            "3. 偶联类型积分",
-            "按时间段统计全体记录中 IC Complete 与 Other 的积分与占比。",
-        )
-        self.fte_overview_table = self._add_table_tab(
-            "4. FTE总览",
-            "FTE = IC Complete积分 / 时间段总积分（支持实验员筛选）。",
-        )
-        self.fte_person_table = self._add_table_tab(
-            "5. 按实验员FTE",
-            "给定时间段按实验员列出 FTE，并求 FTE 总值。",
+        self.fte_person_table = self._add_fte_overview_tab(
+            "3. FTE总览",
+            "仅统计老员工，展示按实验员FTE与尚未获得的积分。",
         )
         self.efficiency_table = self._add_table_tab(
-            "6. 人效",
-            "人效 = 时间段内 Unique(C|D)数量 / (第5页 FTE总值)。",
+            "4. 人效",
+            "仅统计老员工，且只将时间段内已完成Bulk阶段的分子视为交付。",
+        )
+        self.tat_table, self.tat_summary_table, self.tat_hint_label = self._add_tat_tab(
+            "5. TAT计算",
+            "统计当前所选FCT分子从 Pilot起始 到 Bulk完成 的天数；本模块忽略实验员/WBP/Product筛选。",
         )
 
         self.setCentralWidget(root)
@@ -417,6 +539,71 @@ class LabKPIDashboard(QMainWindow):
         layout.addWidget(note_label)
 
         table = QTableWidget()
+        self._init_table_widget(table)
+        layout.addWidget(table, 1)
+
+        self.tab_widget.addTab(tab, tab_name)
+        return table
+
+    def _add_fte_overview_tab(self, tab_name: str, note: str) -> QTableWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        note_label = QLabel(note)
+        note_label.setStyleSheet("color:#47708f; font-size:12px;")
+        note_label.setWordWrap(True)
+        layout.addWidget(note_label)
+
+        person_group = QGroupBox("按实验员FTE")
+        person_layout = QVBoxLayout(person_group)
+        person_layout.setContentsMargins(10, 10, 10, 10)
+        person_table = QTableWidget()
+        self._init_table_widget(person_table)
+        person_layout.addWidget(person_table)
+        layout.addWidget(person_group, 1)
+
+        self.tab_widget.addTab(tab, tab_name)
+        return person_table
+
+    def _add_tat_tab(self, tab_name: str, note: str) -> tuple[QTableWidget, QTableWidget, QLabel]:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        note_label = QLabel(note)
+        note_label.setStyleSheet("color:#47708f; font-size:12px;")
+        note_label.setWordWrap(True)
+        layout.addWidget(note_label)
+
+        main_group = QGroupBox("TAT明细")
+        main_layout = QVBoxLayout(main_group)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        tat_table = QTableWidget()
+        self._init_table_widget(tat_table)
+        main_layout.addWidget(tat_table)
+        layout.addWidget(main_group, 1)
+
+        summary_group = QGroupBox("TAT统计")
+        summary_layout = QVBoxLayout(summary_group)
+        summary_layout.setContentsMargins(10, 10, 10, 10)
+        tat_summary_table = QTableWidget()
+        self._init_table_widget(tat_summary_table)
+        summary_layout.addWidget(tat_summary_table)
+
+        hint_label = QLabel("TAT模块忽略实验员/WBP/Product筛选，仅按时间段和FCT统计。")
+        hint_label.setStyleSheet("color:#8A3B12; font-size:12px;")
+        hint_label.setWordWrap(True)
+        summary_layout.addWidget(hint_label)
+        layout.addWidget(summary_group)
+
+        self.tab_widget.addTab(tab, tab_name)
+        return tat_table, tat_summary_table, hint_label
+
+    @staticmethod
+    def _init_table_widget(table: QTableWidget) -> None:
         table.setAlternatingRowColors(True)
         table.setSortingEnabled(False)
         table.verticalHeader().setVisible(False)
@@ -424,10 +611,6 @@ class LabKPIDashboard(QMainWindow):
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(table, 1)
-
-        self.tab_widget.addTab(tab, tab_name)
-        return table
 
     def _auto_pick_default_file(self) -> None:
         cwd = Path.cwd()
@@ -477,6 +660,8 @@ class LabKPIDashboard(QMainWindow):
 
         try:
             self.df_raw = self._read_source_sheet(path, sheet_name)
+        except ColumnMappingCancelledError:
+            return
         except Exception as exc:  # pragma: no cover - GUI message path
             QMessageBox.critical(self, "加载失败", f"解析数据失败:\n{exc}")
             return
@@ -486,6 +671,7 @@ class LabKPIDashboard(QMainWindow):
             return
 
         self._rebuild_researcher_filter_options()
+        self._rebuild_non_other_filter_options()
         self._refresh_all_tabs()
 
     def _read_source_sheet(self, file_path: Path, sheet_name: str) -> pd.DataFrame:
@@ -495,56 +681,10 @@ class LabKPIDashboard(QMainWindow):
                 raise ValueError(f"Sheet 不存在: {sheet_name}")
 
             ws = wb[sheet_name]
-            rows: list[dict[str, Any]] = []
+            header_catalog = self._build_header_catalog(ws)
             epoch = wb.epoch
-
-            for row in ws.iter_rows(min_row=4, max_col=35, values_only=True):
-                coupling_raw = row[COL_COUPLING_A]
-                wbp_raw = row[COL_WBP_C]
-                product_raw = row[COL_PRODUCT_D]
-                researcher_raw = row[COL_RESEARCHER_E]
-                start_raw = row[COL_START_AF]
-                end_raw = row[COL_END_AG]
-                score_raw = row[COL_SCORE_AI]
-
-                if self._all_empty(
-                    coupling_raw,
-                    wbp_raw,
-                    product_raw,
-                    researcher_raw,
-                    start_raw,
-                    end_raw,
-                    score_raw,
-                ):
-                    continue
-
-                coupling_type = self._norm_text(coupling_raw)
-                wbp_code = self._norm_text(wbp_raw)
-                product_id = self._norm_text(product_raw)
-                researcher = self._norm_text(researcher_raw)
-                start_date = self._to_date(start_raw, epoch)
-                end_date = self._to_date(end_raw, epoch)
-                score = self._to_float(score_raw)
-
-                if not researcher:
-                    continue
-
-                is_ic = coupling_type.casefold() == "ic complete"
-                cd_key = f"{wbp_code}|{product_id}" if (wbp_code or product_id) else ""
-
-                rows.append(
-                    {
-                        "coupling_type": coupling_type,
-                        "coupling_group": "IC Complete" if is_ic else "Other",
-                        "wbp_code": wbp_code,
-                        "product_id": product_id,
-                        "researcher": researcher,
-                        "start_date": start_date,
-                        "end_date": end_date,
-                        "score": score,
-                        "cd_key": cd_key,
-                    }
-                )
+            resolved_mapping = self._resolve_column_mapping(ws, header_catalog, epoch)
+            rows = self._read_rows_with_mapping(ws, resolved_mapping, epoch)
         finally:
             wb.close()
 
@@ -556,6 +696,283 @@ class LabKPIDashboard(QMainWindow):
         df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce")
         df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0.0)
         return df
+
+    def _build_header_catalog(self, ws: Any) -> list[dict[str, Any]]:
+        rows = list(
+            ws.iter_rows(
+                min_row=HEADER_ROW_1,
+                max_row=HEADER_ROW_2,
+                max_col=ws.max_column,
+                values_only=True,
+            )
+        )
+        catalog: list[dict[str, Any]] = []
+        sample_values: list[Any] = [None] * ws.max_column
+
+        for data_row in ws.iter_rows(min_row=4, max_col=ws.max_column, values_only=True):
+            all_found = True
+            for idx in range(ws.max_column):
+                if sample_values[idx] is not None:
+                    continue
+                value = self._safe_cell(data_row, idx)
+                if isinstance(value, str):
+                    if value.strip():
+                        sample_values[idx] = value
+                elif value not in (None, ""):
+                    sample_values[idx] = value
+                if sample_values[idx] is None:
+                    all_found = False
+            if all_found:
+                break
+
+        for idx in range(ws.max_column):
+            raw_parts: list[str] = []
+            normalized_parts: list[str] = []
+
+            for row in rows:
+                raw = self._norm_text(self._safe_cell(row, idx))
+                if raw and raw not in raw_parts:
+                    raw_parts.append(raw)
+                normalized = self._normalize_header_text(raw)
+                if normalized and normalized not in normalized_parts:
+                    normalized_parts.append(normalized)
+
+            combined = " ".join(raw_parts)
+            sample_value = sample_values[idx]
+            display_text = combined if combined else "(空表头)"
+            sample_text = self._norm_text(sample_value) or "-"
+            column_letter = get_column_letter(idx + 1)
+            catalog.append(
+                {
+                    "index": idx,
+                    "column_letter": column_letter,
+                    "display_text": display_text,
+                    "sample_text": sample_text,
+                    "option_text": f"{column_letter} | {display_text} | 示例: {sample_text}",
+                    "normalized_parts": normalized_parts,
+                    "normalized_combined": self._normalize_header_text(combined),
+                }
+            )
+
+        return catalog
+
+    def _resolve_column_mapping(
+        self,
+        ws: Any,
+        header_catalog: list[dict[str, Any]],
+        epoch: datetime,
+    ) -> dict[str, int]:
+        initial_mapping = self._build_initial_column_mapping(header_catalog)
+        issues = self._validate_column_mapping(ws, initial_mapping, epoch)
+        if not issues:
+            return {field: int(idx) for field, idx in initial_mapping.items() if idx is not None}
+
+        mapping = self._prompt_for_column_mapping(header_catalog, initial_mapping)
+        if mapping is None:
+            raise ColumnMappingCancelledError()
+
+        manual_issues = self._validate_column_mapping(ws, mapping, epoch)
+        if manual_issues:
+            raise ValueError("人工选择后数据仍不合法：\n- " + "\n- ".join(manual_issues))
+
+        self.session_column_mapping_defaults = {field: int(idx) for field, idx in mapping.items() if idx is not None}
+        return self.session_column_mapping_defaults.copy()
+
+    def _build_initial_column_mapping(self, header_catalog: list[dict[str, Any]]) -> dict[str, int | None]:
+        mapping: dict[str, int | None] = {field: None for field in REQUIRED_FIELDS}
+        max_index = len(header_catalog) - 1
+
+        if self.session_column_mapping_defaults:
+            for field, idx in self.session_column_mapping_defaults.items():
+                if 0 <= idx <= max_index:
+                    mapping[field] = idx
+
+        if mapping[FIELD_NEW_EMPLOYEE] is None:
+            mapping[FIELD_NEW_EMPLOYEE] = self._find_column_index(
+                header_catalog,
+                contains=self._normalize_header_text(HEADER_NEW_EMPLOYEE),
+            )
+        if mapping[FIELD_REQUEST_ACTIVITY] is None:
+            mapping[FIELD_REQUEST_ACTIVITY] = self._find_column_index(
+                header_catalog,
+                equals=self._normalize_header_text(HEADER_REQUEST_ACTIVITY),
+            )
+
+        for field, idx in DEFAULT_FIXED_COLUMN_MAPPING.items():
+            if mapping[field] is None and idx <= max_index:
+                mapping[field] = idx
+
+        return mapping
+
+    def _validate_column_mapping(
+        self,
+        ws: Any,
+        mapping: dict[str, int | None],
+        epoch: datetime,
+    ) -> list[str]:
+        issues: list[str] = []
+
+        missing_fields = [FIELD_LABELS[field] for field in REQUIRED_FIELDS if mapping.get(field) is None]
+        if missing_fields:
+            issues.append(f"缺少必需字段列：{', '.join(missing_fields)}")
+
+        indices = [idx for idx in mapping.values() if idx is not None]
+        if len(indices) != len(set(indices)):
+            issues.append("必需字段中存在重复列映射。")
+
+        if issues:
+            return issues
+
+        researcher_has_value = False
+        start_has_date = False
+        end_has_date = False
+        score_has_number = False
+
+        for row in ws.iter_rows(min_row=4, max_col=ws.max_column, values_only=True):
+            researcher = self._norm_text(self._safe_cell(row, mapping[FIELD_RESEARCHER]))
+            start_date = self._to_date(self._safe_cell(row, mapping[FIELD_START_DATE]), epoch)
+            end_date = self._to_date(self._safe_cell(row, mapping[FIELD_END_DATE]), epoch)
+            score_raw = self._safe_cell(row, mapping[FIELD_SCORE])
+
+            if researcher:
+                researcher_has_value = True
+            if start_date is not None:
+                start_has_date = True
+            if end_date is not None:
+                end_has_date = True
+            if self._looks_like_number(score_raw):
+                score_has_number = True
+
+            if researcher_has_value and score_has_number and start_has_date and end_has_date:
+                break
+
+        if not researcher_has_value:
+            issues.append("实验员列在数据区没有任何非空值。")
+        if not start_has_date and not end_has_date:
+            issues.append("起始日期与完成日期列都没有任何可解析日期。")
+        if not score_has_number:
+            issues.append("积分列没有任何可解析数字。")
+
+        return issues
+
+    def _prompt_for_column_mapping(
+        self,
+        header_catalog: list[dict[str, Any]],
+        initial_mapping: dict[str, int | None],
+    ) -> dict[str, int | None] | None:
+        dialog = ColumnMappingDialog(self, header_catalog, initial_mapping)
+        if dialog.exec() != int(QDialog.DialogCode.Accepted):
+            return None
+        return dialog.selected_mapping()
+
+    def _read_rows_with_mapping(
+        self,
+        ws: Any,
+        mapping: dict[str, int],
+        epoch: datetime,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+
+        for row in ws.iter_rows(min_row=4, max_col=ws.max_column, values_only=True):
+            coupling_raw = self._safe_cell(row, mapping[FIELD_COUPLING_TYPE])
+            wbp_raw = self._safe_cell(row, mapping[FIELD_WBP_CODE])
+            product_raw = self._safe_cell(row, mapping[FIELD_PRODUCT_ID])
+            researcher_raw = self._safe_cell(row, mapping[FIELD_RESEARCHER])
+            start_raw = self._safe_cell(row, mapping[FIELD_START_DATE])
+            end_raw = self._safe_cell(row, mapping[FIELD_END_DATE])
+            score_raw = self._safe_cell(row, mapping[FIELD_SCORE])
+            new_employee_raw = self._safe_cell(row, mapping[FIELD_NEW_EMPLOYEE])
+            request_activity_raw = self._safe_cell(row, mapping[FIELD_REQUEST_ACTIVITY])
+
+            if self._all_empty(
+                coupling_raw,
+                wbp_raw,
+                product_raw,
+                researcher_raw,
+                start_raw,
+                end_raw,
+                score_raw,
+                new_employee_raw,
+                request_activity_raw,
+            ):
+                continue
+
+            coupling_type = self._norm_text(coupling_raw)
+            wbp_code = self._norm_text(wbp_raw)
+            product_id = self._norm_text(product_raw)
+            researcher = self._norm_text(researcher_raw)
+            start_date = self._to_date(start_raw, epoch)
+            end_date = self._to_date(end_raw, epoch)
+            score = self._to_float(score_raw)
+            new_employee_text = self._norm_text(new_employee_raw)
+            request_activity = self._norm_text(request_activity_raw)
+            stage_group = self._classify_stage(request_activity)
+
+            if not researcher:
+                continue
+
+            cd_key = f"{wbp_code}|{product_id}" if (wbp_code or product_id) else ""
+            rows.append(
+                {
+                    "coupling_type": coupling_type,
+                    "wbp_code": wbp_code,
+                    "product_id": product_id,
+                    "researcher": researcher,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "score": score,
+                    "cd_key": cd_key,
+                    "new_employee_raw": new_employee_text,
+                    "is_new_employee": new_employee_text == "是",
+                    "request_activity_raw": request_activity,
+                    "stage_group": stage_group,
+                }
+            )
+
+        return rows
+
+    def _find_column_index(
+        self,
+        header_catalog: list[dict[str, Any]],
+        *,
+        equals: str | None = None,
+        contains: str | None = None,
+    ) -> int | None:
+        for item in header_catalog:
+            tokens = set(item["normalized_parts"])
+            combined = item["normalized_combined"]
+            if combined:
+                tokens.add(combined)
+
+            if equals and equals in tokens:
+                return int(item["index"])
+            if contains and any(contains in token for token in tokens):
+                return int(item["index"])
+
+        return None
+
+    @staticmethod
+    def _normalize_header_text(value: Any) -> str:
+        if value is None:
+            return ""
+        return "".join(str(value).split()).casefold()
+
+    @staticmethod
+    def _classify_stage(value: str) -> str:
+        lowered = value.casefold()
+        if lowered == "pilot":
+            return "Pilot"
+        if lowered == "bulk":
+            return "Bulk"
+        return UNKNOWN_STAGE
+
+    @staticmethod
+    def _safe_cell(row: Any, idx: int | None) -> Any:
+        if idx is None:
+            return None
+        if idx < 0 or idx >= len(row):
+            return None
+        return row[idx]
 
     @staticmethod
     def _all_empty(*values: Any) -> bool:
@@ -583,6 +1000,21 @@ class LabKPIDashboard(QMainWindow):
             return float(text)
         except ValueError:
             return 0.0
+
+    @staticmethod
+    def _looks_like_number(value: Any) -> bool:
+        if value is None or value == "":
+            return False
+        if isinstance(value, (int, float)):
+            return True
+        text = str(value).strip().replace(",", "")
+        if text == "":
+            return False
+        try:
+            float(text)
+            return True
+        except ValueError:
+            return False
 
     @staticmethod
     def _to_date(value: Any, epoch: datetime) -> date | None:
@@ -620,6 +1052,24 @@ class LabKPIDashboard(QMainWindow):
         self.researcher_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.researcher_combo.blockSignals(False)
 
+    def _rebuild_non_other_filter_options(self) -> None:
+        current = self.non_other_combo.currentData() or ""
+        types = sorted(x for x in self.df_raw["coupling_type"].dropna().unique().tolist() if x)
+
+        self.non_other_combo.blockSignals(True)
+        self.non_other_combo.clear()
+        self.non_other_combo.addItem(NON_OTHER_PLACEHOLDER, userData="")
+        for item in types:
+            self.non_other_combo.addItem(item, userData=item)
+
+        idx = self.non_other_combo.findData(current)
+        self.non_other_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.non_other_combo.blockSignals(False)
+
+    def _on_non_other_changed(self, *_: Any) -> None:
+        if not self.df_raw.empty:
+            self._refresh_all_tabs()
+
     def _current_filters(self) -> FilterState:
         researcher = self.researcher_combo.currentText().strip()
         if researcher == "全部":
@@ -628,11 +1078,11 @@ class LabKPIDashboard(QMainWindow):
         return FilterState(
             start_date=self.start_date_edit.date().toPyDate(),
             end_date=self.end_date_edit.date().toPyDate(),
-            date_basis=self.date_basis_combo.currentData(),
             researcher=researcher,
             wbp_code=self.wbp_edit.text().strip(),
             product_id=self.product_edit.text().strip(),
             saturation_threshold=int(self.saturation_spin.value()),
+            non_other_coupling_type=str(self.non_other_combo.currentData() or "").strip(),
         )
 
     @staticmethod
@@ -669,21 +1119,26 @@ class LabKPIDashboard(QMainWindow):
     def _update_period_badge(self) -> None:
         start = self.start_date_edit.date().toPyDate()
         end = self.end_date_edit.date().toPyDate()
-        self.period_badge.setText(f"时间段: {start:%Y-%m-%d} ~ {end:%Y-%m-%d}")
+        self.period_badge.setText(f"时间段(闭区间): {start:%Y-%m-%d} ~ {end:%Y-%m-%d}")
 
     def _prepare_df_with_stat_date(self, fs: FilterState) -> pd.DataFrame:
         if self.df_raw.empty:
             return pd.DataFrame()
 
         df = self.df_raw.copy()
+        df["stat_date"] = df["end_date"]
 
-        if fs.date_basis == "completion_date":
-            df["stat_date"] = df["end_date"]
-        elif fs.date_basis == "start_date":
-            df["stat_date"] = df["start_date"]
-        else:
-            df["stat_date"] = df["end_date"].where(df["end_date"].notna(), df["start_date"])
-
+        start_ts = pd.Timestamp(fs.start_date)
+        end_ts = pd.Timestamp(fs.end_date)
+        df["ag_in_period_for_efficiency"] = df["end_date"].between(start_ts, end_ts, inclusive="both")
+        df["is_non_other"] = df["coupling_type"] == fs.non_other_coupling_type if fs.non_other_coupling_type else False
+        df["efficiency_group"] = df["is_non_other"].map({True: "FCT", False: "非FCT"})
+        df["coupling_group"] = df["is_non_other"].map(
+            {True: fs.non_other_coupling_type or "FCT", False: "非FCT"}
+        )
+        df["is_delivered_bulk_record"] = (
+            df["ag_in_period_for_efficiency"] & df["is_non_other"] & (df["stage_group"] == "Bulk") & (df["cd_key"] != "")
+        )
         return df
 
     def _filter_common(
@@ -714,6 +1169,66 @@ class LabKPIDashboard(QMainWindow):
 
         return out
 
+    def _filter_old_employee_base(
+        self,
+        df: pd.DataFrame,
+        fs: FilterState,
+        *,
+        apply_period: bool,
+        apply_researcher: bool,
+        include_other: bool,
+    ) -> pd.DataFrame:
+        base = self._filter_common(df, fs, apply_period=apply_period, apply_researcher=apply_researcher)
+        if base.empty:
+            return base
+
+        out = base[~base["is_new_employee"]].copy()
+        if not include_other:
+            out = out[out["is_non_other"]].copy()
+        return out
+
+    def _filter_efficiency_base(self, df: pd.DataFrame, fs: FilterState) -> pd.DataFrame:
+        base = self._filter_old_employee_base(
+            df,
+            fs,
+            apply_period=False,
+            apply_researcher=True,
+            include_other=True,
+        )
+        if base.empty:
+            return base
+        return base[base["ag_in_period_for_efficiency"]].copy()
+
+    @staticmethod
+    def _compute_delivered_molecule_count(base: pd.DataFrame) -> float:
+        if base.empty:
+            return 0.0
+        delivered = base.loc[base["is_delivered_bulk_record"] & (base["cd_key"] != ""), "cd_key"]
+        return float(delivered.nunique())
+
+    @staticmethod
+    def _compute_selected_researcher_fte_sum(base: pd.DataFrame) -> tuple[float, list[str]]:
+        if base.empty:
+            return 0.0, []
+
+        work = base.copy()
+        work["fct_score_component"] = work["score"].where(work["is_non_other"], 0.0)
+        grouped = (
+            work.groupby("researcher", as_index=False)
+            .agg(total_score=("score", "sum"), fct_score=("fct_score_component", "sum"))
+            .sort_values("researcher")
+        )
+        grouped["fte_value"] = grouped.apply(
+            lambda row: row["fct_score"] / row["total_score"] if row["total_score"] else 0.0,
+            axis=1,
+        )
+        return float(grouped["fte_value"].sum()), grouped["researcher"].astype(str).tolist()
+
+    def _render_message_table(self, table: QTableWidget, message: str) -> pd.DataFrame:
+        result = pd.DataFrame([[message]], columns=["说明"])
+        self._render_table(table, result)
+        return result
+
     def _refresh_all_tabs(self) -> None:
         if self.df_raw.empty:
             QMessageBox.information(self, "提示", "请先加载数据文件。")
@@ -730,19 +1245,31 @@ class LabKPIDashboard(QMainWindow):
         detail_df = self._fill_detail_tab(df, fs)
         wip_df = self._fill_wip_tab(df, fs)
         score_df = self._fill_score_tab(df, fs)
-        type_df = self._fill_type_tab(df, fs)
-        _, fte_overview_metrics = self._fill_fte_overview_tab(df, fs)
-        fte_person_df, fte_total = self._fill_fte_by_person_tab(df, fs)
-        _, efficiency_metrics = self._fill_efficiency_tab(df, fs, fte_total)
+        if fs.non_other_coupling_type:
+            fte_person_df, _ = self._fill_fte_by_person_tab(df, fs)
+            _, efficiency_metrics = self._fill_efficiency_tab(df, fs)
+            tat_df, tat_summary_df = self._fill_tat_tab(df, fs)
+            tat_message = ""
+        else:
+            self._render_message_table(self.fte_person_table, NON_OTHER_REQUIRED_MESSAGE)
+            self._render_message_table(self.efficiency_table, NON_OTHER_REQUIRED_MESSAGE)
+            self._render_message_table(self.tat_table, NON_OTHER_REQUIRED_MESSAGE)
+            self._render_message_table(self.tat_summary_table, NON_OTHER_REQUIRED_MESSAGE)
+            fte_person_df = pd.DataFrame()
+            efficiency_metrics = {}
+            tat_df = pd.DataFrame()
+            tat_summary_df = pd.DataFrame()
+            tat_message = NON_OTHER_REQUIRED_MESSAGE
 
         self.chart_payloads = {
             "detail": detail_df,
             "wip": wip_df,
             "score": score_df,
-            "type": type_df,
-            "fte_overview_metrics": fte_overview_metrics,
             "fte_person": fte_person_df,
             "efficiency_metrics": efficiency_metrics,
+            "tat": tat_df,
+            "tat_summary": tat_summary_df,
+            "tat_message": tat_message,
         }
         self._refresh_chart_for_current_tab()
 
@@ -754,7 +1281,10 @@ class LabKPIDashboard(QMainWindow):
                 columns=[
                     "实验员(E)",
                     "偶联类型(A)",
-                    "偶联分类(IC/Other)",
+                    "偶联分类(FCT/非FCT)",
+                    "Request activity",
+                    "阶段归类",
+                    "是否新人",
                     "WBP Code(C)",
                     "Product ID(D)",
                     "起始日期(AF)",
@@ -762,6 +1292,8 @@ class LabKPIDashboard(QMainWindow):
                     "统计日期(stat_date)",
                     "积分(AI)",
                     "CD_Key(C|D)",
+                    "AG在时间段内",
+                    "计入已完成分子",
                 ]
             )
         else:
@@ -771,6 +1303,9 @@ class LabKPIDashboard(QMainWindow):
                         "researcher",
                         "coupling_type",
                         "coupling_group",
+                        "request_activity_raw",
+                        "stage_group",
+                        "new_employee_raw",
                         "wbp_code",
                         "product_id",
                         "start_date",
@@ -778,13 +1313,18 @@ class LabKPIDashboard(QMainWindow):
                         "stat_date",
                         "score",
                         "cd_key",
+                        "ag_in_period_for_efficiency",
+                        "is_delivered_bulk_record",
                     ]
                 ]
                 .rename(
                     columns={
                         "researcher": "实验员(E)",
                         "coupling_type": "偶联类型(A)",
-                        "coupling_group": "偶联分类(IC/Other)",
+                        "coupling_group": "偶联分类(FCT/非FCT)",
+                        "request_activity_raw": "Request activity",
+                        "stage_group": "阶段归类",
+                        "new_employee_raw": "是否新人",
                         "wbp_code": "WBP Code(C)",
                         "product_id": "Product ID(D)",
                         "start_date": "起始日期(AF)",
@@ -792,6 +1332,8 @@ class LabKPIDashboard(QMainWindow):
                         "stat_date": "统计日期(stat_date)",
                         "score": "积分(AI)",
                         "cd_key": "CD_Key(C|D)",
+                        "ag_in_period_for_efficiency": "AG在时间段内",
+                        "is_delivered_bulk_record": "计入已完成分子",
                     }
                 )
                 .sort_values(["统计日期(stat_date)", "实验员(E)"], ascending=[True, True])
@@ -806,7 +1348,8 @@ class LabKPIDashboard(QMainWindow):
         unfinished = base[base["end_date"].isna()].copy()
 
         if unfinished.empty:
-            result = pd.DataFrame(
+            self._render_message_table(self.wip_table, NO_WIP_MESSAGE)
+            return pd.DataFrame(
                 columns=["实验员", "未完成记录数", "未完成分子数(Unique C|D)", "饱和判断", "阈值"]
             )
         else:
@@ -839,7 +1382,7 @@ class LabKPIDashboard(QMainWindow):
         base = self._filter_common(df, fs, apply_period=True, apply_researcher=True)
 
         if base.empty:
-            result = pd.DataFrame(columns=["实验员", "积分合计", "记录数", "平均积分/记录"])
+            result = pd.DataFrame(columns=["实验员", "积分合计", "记录数"])
         else:
             grouped = (
                 base.groupby("researcher", as_index=False)
@@ -849,120 +1392,237 @@ class LabKPIDashboard(QMainWindow):
                 )
                 .sort_values("total_score", ascending=False)
             )
-            grouped["avg_score"] = grouped["total_score"] / grouped["record_count"]
             result = grouped.rename(
                 columns={
                     "researcher": "实验员",
                     "total_score": "积分合计",
                     "record_count": "记录数",
-                    "avg_score": "平均积分/记录",
                 }
             )
 
         self._render_table(self.score_table, result)
         return result
 
-    def _fill_type_tab(self, df: pd.DataFrame, fs: FilterState) -> pd.DataFrame:
-        # 需求3：统计所有实验记录的总积分，不应用实验员筛选
-        base = self._filter_common(df, fs, apply_period=True, apply_researcher=False)
+    def _fill_fte_by_person_tab(self, df: pd.DataFrame, fs: FilterState) -> tuple[pd.DataFrame, dict[str, float]]:
+        base_with_other = self._filter_old_employee_base(
+            df,
+            fs,
+            apply_period=True,
+            apply_researcher=False,
+            include_other=True,
+        )
+        base_without_other = self._filter_old_employee_base(
+            df,
+            fs,
+            apply_period=True,
+            apply_researcher=False,
+            include_other=False,
+        )
 
-        ic_score = float(base.loc[base["coupling_group"] == "IC Complete", "score"].sum())
-        other_score = float(base.loc[base["coupling_group"] == "Other", "score"].sum())
-        total_score = ic_score + other_score
-
-        rows = [
-            ["IC Complete", ic_score, ic_score / total_score if total_score else 0.0],
-            ["Other", other_score, other_score / total_score if total_score else 0.0],
-            ["Total", total_score, 1.0 if total_score else 0.0],
-        ]
-        result = pd.DataFrame(rows, columns=["偶联类型", "积分", "占比"])
-        self._render_table(self.type_table, result, percent_cols={"占比"})
-        return result
-
-    def _fill_fte_overview_tab(self, df: pd.DataFrame, fs: FilterState) -> tuple[pd.DataFrame, dict[str, float]]:
-        base = self._filter_common(df, fs, apply_period=True, apply_researcher=True)
-        total_score = float(base["score"].sum())
-        ic_score = float(base.loc[base["coupling_group"] == "IC Complete", "score"].sum())
-        fte = ic_score / total_score if total_score else 0.0
-
-        rows = [
-            ["时间段", f"{fs.start_date:%Y-%m-%d} ~ {fs.end_date:%Y-%m-%d}"],
-            ["实验员筛选", fs.researcher if fs.researcher else "全部"],
-            ["总积分", total_score],
-            ["IC Complete积分", ic_score],
-            ["FTE(IC/Total)", fte],
-        ]
-        result = pd.DataFrame(rows, columns=["指标", "值"])
-        self._render_table(self.fte_overview_table, result, percent_rows={"FTE(IC/Total)"})
-        return result, {"total_score": total_score, "ic_score": ic_score, "fte": fte}
-
-    def _fill_fte_by_person_tab(self, df: pd.DataFrame, fs: FilterState) -> tuple[pd.DataFrame, float]:
-        # 需求5：按实验员列出FTE，因此不应用实验员单选过滤（仍应用WBP/Product）
-        base = self._filter_common(df, fs, apply_period=True, apply_researcher=False)
-
-        if base.empty:
-            result = pd.DataFrame(columns=["实验员", "总积分", "IC Complete积分", "FTE"])
-            fte_total = 0.0
-        else:
-            grouped = base.groupby("researcher", as_index=False).agg(total_score=("score", "sum"))
-            ic_grouped = (
-                base[base["coupling_group"] == "IC Complete"]
-                .groupby("researcher", as_index=False)
-                .agg(ic_score=("score", "sum"))
+        if base_with_other.empty and base_without_other.empty:
+            result = pd.DataFrame(
+                columns=[
+                    "实验员",
+                    "总积分(含非FCT)",
+                    "FCT积分",
+                    "FTE(含非FCT)",
+                    "总积分(不含非FCT)",
+                    "FTE(不含非FCT)",
+                    "尚未获得的积分",
+                ]
             )
-            merged = grouped.merge(ic_grouped, on="researcher", how="left").fillna({"ic_score": 0.0})
-            merged["fte"] = merged.apply(
-                lambda row: row["ic_score"] / row["total_score"] if row["total_score"] else 0.0,
+            fte_totals = {"with_other": 0.0, "without_other": 0.0}
+        else:
+            grouped = base_with_other.groupby("researcher", as_index=False).agg(total_with_other=("score", "sum"))
+            non_other_grouped = (
+                base_with_other[base_with_other["is_non_other"]]
+                .groupby("researcher", as_index=False)
+                .agg(non_other_score=("score", "sum"))
+            )
+            merged = grouped.merge(non_other_grouped, on="researcher", how="left").fillna({"non_other_score": 0.0})
+            merged["fte_with_other"] = merged.apply(
+                lambda row: row["non_other_score"] / row["total_with_other"] if row["total_with_other"] else 0.0,
                 axis=1,
             )
-            merged = merged.sort_values("fte", ascending=False)
-            fte_total = float(merged["fte"].sum())
+            without_grouped = (
+                base_without_other.groupby("researcher", as_index=False).agg(total_without_other=("score", "sum"))
+                if not base_without_other.empty
+                else pd.DataFrame(columns=["researcher", "total_without_other"])
+            )
+            merged = merged.merge(without_grouped, on="researcher", how="outer").fillna(
+                {
+                    "total_with_other": 0.0,
+                    "non_other_score": 0.0,
+                    "fte_with_other": 0.0,
+                    "total_without_other": 0.0,
+                }
+            )
+            merged["fte_without_other"] = merged["total_without_other"].apply(lambda value: 1.0 if value else 0.0)
+            unearned_base = self._filter_old_employee_base(
+                df,
+                fs,
+                apply_period=False,
+                apply_researcher=False,
+                include_other=True,
+            )
+            unearned_grouped = (
+                unearned_base[unearned_base["end_date"].isna()]
+                .groupby("researcher", as_index=False)
+                .agg(unearned_score=("score", "sum"))
+                if not unearned_base.empty
+                else pd.DataFrame(columns=["researcher", "unearned_score"])
+            )
+            merged = merged.merge(unearned_grouped, on="researcher", how="outer").fillna(
+                {
+                    "total_with_other": 0.0,
+                    "non_other_score": 0.0,
+                    "fte_with_other": 0.0,
+                    "total_without_other": 0.0,
+                    "fte_without_other": 0.0,
+                    "unearned_score": 0.0,
+                }
+            )
+            merged = merged.sort_values(["fte_with_other", "total_with_other"], ascending=[False, False])
+            fte_totals = {
+                "with_other": float(merged["fte_with_other"].sum()),
+                "without_other": float(merged["fte_without_other"].sum()),
+            }
             result = merged.rename(
                 columns={
                     "researcher": "实验员",
-                    "total_score": "总积分",
-                    "ic_score": "IC Complete积分",
-                    "fte": "FTE",
+                    "total_with_other": "总积分(含非FCT)",
+                    "non_other_score": "FCT积分",
+                    "fte_with_other": "FTE(含非FCT)",
+                    "total_without_other": "总积分(不含非FCT)",
+                    "fte_without_other": "FTE(不含非FCT)",
+                    "unearned_score": "尚未获得的积分",
                 }
             )
 
-        self._render_table(self.fte_person_table, result, percent_cols={"FTE"})
-        return result, fte_total
+        self._render_table(self.fte_person_table, result, percent_cols={"FTE(含非FCT)", "FTE(不含非FCT)"})
+        return result, fte_totals
 
     def _fill_efficiency_tab(
         self,
         df: pd.DataFrame,
         fs: FilterState,
-        fte_total: float,
     ) -> tuple[pd.DataFrame, dict[str, float]]:
-        # 需求6：使用与需求5相同的统计底集（按时间段，按WBP/Product，可跨实验员）
-        base = self._filter_common(df, fs, apply_period=True, apply_researcher=False)
-        unique_cd_count = float(base.loc[base["cd_key"] != "", "cd_key"].nunique())
-        efficiency = unique_cd_count / fte_total if fte_total else 0.0
+        base = self._filter_efficiency_base(df, fs)
+        completed_molecules = self._compute_delivered_molecule_count(base)
+        selected_researcher_fte_sum, researchers = self._compute_selected_researcher_fte_sum(base)
+        efficiency = completed_molecules / selected_researcher_fte_sum if selected_researcher_fte_sum else 0.0
+        researcher_text = "、".join(researchers) if researchers else "无"
 
         rows = [
-            ["时间段", f"{fs.start_date:%Y-%m-%d} ~ {fs.end_date:%Y-%m-%d}"],
-            ["Unique(C|D)数量", unique_cd_count],
-            ["FTE总值(来自第5页)", fte_total],
-            ["人效 = Unique(C|D)/FTE总值", efficiency],
+            ["时间段(AG闭区间)", f"{fs.start_date:%Y-%m-%d} ~ {fs.end_date:%Y-%m-%d}"],
+            ["FCT偶联类型", fs.non_other_coupling_type],
+            ["实验员集合", researcher_text],
+            ["已完成分子数", completed_molecules],
+            ["实验员集合FTE值之和", selected_researcher_fte_sum],
+            ["人效", efficiency],
         ]
         result = pd.DataFrame(rows, columns=["指标", "值"])
-        self._render_table(
-            self.efficiency_table,
-            result,
-            percent_rows={"FTE总值(来自第5页)"},
-        )
+        self._render_table(self.efficiency_table, result)
         return result, {
-            "unique_cd_count": unique_cd_count,
-            "fte_total": fte_total,
+            "completed_molecules": completed_molecules,
+            "selected_researcher_fte_sum": selected_researcher_fte_sum,
             "efficiency": efficiency,
         }
+
+    def _fill_tat_tab(self, df: pd.DataFrame, fs: FilterState) -> tuple[pd.DataFrame, pd.DataFrame]:
+        start_ts = pd.Timestamp(fs.start_date)
+        end_ts = pd.Timestamp(fs.end_date)
+
+        fct_df = df[df["is_non_other"] & (df["cd_key"] != "")].copy()
+        bulk_df = fct_df[
+            (fct_df["stage_group"] == "Bulk")
+            & fct_df["end_date"].notna()
+            & fct_df["end_date"].between(start_ts, end_ts, inclusive="both")
+        ].copy()
+        pilot_df = fct_df[
+            (fct_df["stage_group"] == "Pilot")
+            & fct_df["start_date"].notna()
+        ].copy()
+
+        if bulk_df.empty or pilot_df.empty:
+            result = pd.DataFrame(columns=["分子标识(C|D)", "Pilot起始日", "Bulk完成日", "TAT(天)"])
+            summary = pd.DataFrame(
+                [["总分子数", 0], ["标红分子数", 0]],
+                columns=["指标", "值"],
+            )
+            self._render_table(self.tat_table, result)
+            self._render_table(self.tat_summary_table, summary)
+            self.tat_hint_label.setText("TAT模块忽略实验员/WBP/Product筛选，仅按时间段和FCT统计。")
+            return result, summary
+
+        bulk_grouped = (
+            bulk_df.groupby("cd_key", as_index=False)
+            .agg(bulk_end_date=("end_date", "max"))
+        )
+        pilot_grouped = (
+            pilot_df.groupby("cd_key", as_index=False)
+            .agg(pilot_start_date=("start_date", "min"))
+        )
+        merged = bulk_grouped.merge(pilot_grouped, on="cd_key", how="inner")
+        merged["tat_days"] = (merged["bulk_end_date"] - merged["pilot_start_date"]).dt.days
+        merged = merged.sort_values(["bulk_end_date", "tat_days", "cd_key"], ascending=[False, False, True])
+
+        result = merged.rename(
+            columns={
+                "cd_key": "分子标识(C|D)",
+                "pilot_start_date": "Pilot起始日",
+                "bulk_end_date": "Bulk完成日",
+                "tat_days": "TAT(天)",
+            }
+        )
+        summary = pd.DataFrame(
+            [
+                ["总分子数", int(len(result))],
+                ["标红分子数", int((result["TAT(天)"] > 10).sum())],
+            ],
+            columns=["指标", "值"],
+        )
+
+        self._render_table(self.tat_table, result)
+        self._highlight_tat_rows(result)
+        self._render_table(self.tat_summary_table, summary)
+        self.tat_hint_label.setText("TAT模块忽略实验员/WBP/Product筛选，仅按时间段和FCT统计。")
+        return result, summary
+
+    def _highlight_tat_rows(self, result: pd.DataFrame) -> None:
+        if result.empty or "TAT(天)" not in result.columns:
+            return
+
+        tat_col_idx = result.columns.get_loc("TAT(天)")
+        for row_idx in range(len(result)):
+            value = result.iloc[row_idx, tat_col_idx]
+            if pd.isna(value) or float(value) <= 10:
+                continue
+            item = self.tat_table.item(row_idx, tat_col_idx)
+            if item is None:
+                continue
+            item.setForeground(QBrush(QColor("#DC2626")))
+            item.setBackground(QBrush(QColor("#FEE2E2")))
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
 
     def _refresh_chart_for_current_tab(self, *_: Any) -> None:
         if not hasattr(self, "tab_widget"):
             return
 
         idx = self.tab_widget.currentIndex()
+        if idx == 3:
+            self.figure.clear()
+            person_ax = self.figure.add_subplot(111)
+            self._style_axis_base(person_ax)
+            self.chart_ax = person_ax
+            self.chart_title_label.setText("FTE总览图")
+            self._plot_fte_person_chart(person_ax)
+            self.figure.tight_layout()
+            self.chart_canvas.draw_idle()
+            return
+
         self.figure.clear()
         self.chart_ax = self.figure.add_subplot(111)
         self._style_axis_base(self.chart_ax)
@@ -971,23 +1631,17 @@ class LabKPIDashboard(QMainWindow):
             self.chart_title_label.setText("筛选明细趋势图")
             self._plot_detail_chart(self.chart_ax)
         elif idx == 1:
-            self.chart_title_label.setText("在研负载图")
+            self.chart_title_label.setText("任务排期图")
             self._plot_wip_chart(self.chart_ax)
         elif idx == 2:
             self.chart_title_label.setText("实验员积分图")
             self._plot_score_chart(self.chart_ax)
-        elif idx == 3:
-            self.chart_title_label.setText("偶联类型积分占比")
-            self._plot_type_chart(self.chart_ax)
         elif idx == 4:
-            self.chart_title_label.setText("FTE总览图")
-            self._plot_fte_overview_chart(self.chart_ax)
-        elif idx == 5:
-            self.chart_title_label.setText("按实验员FTE图")
-            self._plot_fte_person_chart(self.chart_ax)
-        elif idx == 6:
             self.chart_title_label.setText("人效图")
             self._plot_efficiency_chart(self.chart_ax)
+        elif idx == 5:
+            self.chart_title_label.setText("TAT图")
+            self._plot_tat_chart(self.chart_ax)
         else:
             self._draw_empty_chart("图表数据不可用")
             return
@@ -1049,7 +1703,7 @@ class LabKPIDashboard(QMainWindow):
         df = self.chart_payloads.get("wip", pd.DataFrame())
         if df.empty:
             ax.axis("off")
-            ax.text(0.5, 0.5, "无在研负载数据", ha="center", va="center", color="#5D7994", transform=ax.transAxes)
+            ax.text(0.5, 0.5, NO_WIP_MESSAGE, ha="center", va="center", color="#5D7994", transform=ax.transAxes)
             return
 
         x = df["实验员"].astype(str).tolist()
@@ -1079,105 +1733,117 @@ class LabKPIDashboard(QMainWindow):
             h = bar.get_height()
             ax.text(bar.get_x() + bar.get_width() / 2, h, f"{h:.1f}", ha="center", va="bottom", fontsize=9, color="#245981")
 
-    def _plot_type_chart(self, ax: Any) -> None:
-        df = self.chart_payloads.get("type", pd.DataFrame())
-        if df.empty or len(df) < 2:
-            ax.axis("off")
-            ax.text(0.5, 0.5, "无偶联类型积分数据", ha="center", va="center", color="#5D7994", transform=ax.transAxes)
-            return
-
-        pie_df = df[df["偶联类型"].isin(["IC Complete", "Other"])]
-        labels = pie_df["偶联类型"].astype(str).tolist()
-        values = pd.to_numeric(pie_df["积分"], errors="coerce").fillna(0).tolist()
-        total = sum(values)
-        if total <= 0:
-            ax.axis("off")
-            ax.text(0.5, 0.5, "积分总和为 0", ha="center", va="center", color="#5D7994", transform=ax.transAxes)
-            return
-
-        colors = ["#3B82F6", "#A5B4FC"]
-        ax.pie(
-            values,
-            labels=labels,
-            colors=colors,
-            startangle=90,
-            wedgeprops={"width": 0.45, "edgecolor": "white"},
-            autopct="%1.1f%%",
-            pctdistance=0.82,
-            textprops={"color": "#234A6B", "fontsize": 10},
-        )
-        ax.set_title("IC Complete vs Other")
-
-    def _plot_fte_overview_chart(self, ax: Any) -> None:
-        metrics = self.chart_payloads.get("fte_overview_metrics", {})
-        total_score = float(metrics.get("total_score", 0.0))
-        ic_score = float(metrics.get("ic_score", 0.0))
-        fte = float(metrics.get("fte", 0.0))
-
-        if total_score == 0 and ic_score == 0:
-            ax.axis("off")
-            ax.text(0.5, 0.5, "无FTE总览数据", ha="center", va="center", color="#5D7994", transform=ax.transAxes)
-            return
-
-        labels = ["总积分", "IC积分"]
-        values = [total_score, ic_score]
-        bars = ax.bar(labels, values, color=["#60A5FA", "#2563EB"], edgecolor="#1D4ED8", linewidth=1.0)
-        ax.set_title("FTE构成")
-        ax.set_ylabel("积分")
-        for bar in bars:
-            h = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width() / 2, h, f"{h:.1f}", ha="center", va="bottom", fontsize=9, color="#245981")
-
-        ax.text(
-            0.98,
-            0.95,
-            f"FTE = {fte * 100:.2f}%",
-            ha="right",
-            va="top",
-            transform=ax.transAxes,
-            fontsize=11,
-            color="#1E4F79",
-            bbox={"boxstyle": "round,pad=0.3", "facecolor": "#E8F4FF", "edgecolor": "#BFDDF8"},
-        )
-
     def _plot_fte_person_chart(self, ax: Any) -> None:
         df = self.chart_payloads.get("fte_person", pd.DataFrame())
-        if df.empty:
+        if df.empty or "实验员" not in df.columns:
             ax.axis("off")
-            ax.text(0.5, 0.5, "无按实验员FTE数据", ha="center", va="center", color="#5D7994", transform=ax.transAxes)
+            ax.text(0.5, 0.5, NON_OTHER_REQUIRED_MESSAGE, ha="center", va="center", color="#5D7994", transform=ax.transAxes)
             return
 
         x = df["实验员"].astype(str).tolist()
-        y = pd.to_numeric(df["FTE"], errors="coerce").fillna(0).tolist()
-        bars = ax.bar(x, y, color="#22C55E", edgecolor="#15803D", linewidth=1.0)
+        y_with = pd.to_numeric(df["FTE(含非FCT)"], errors="coerce").fillna(0).tolist()
+        y_without = pd.to_numeric(df["FTE(不含非FCT)"], errors="coerce").fillna(0).tolist()
+        positions = range(len(x))
+        width = 0.38
+
+        bars_with = ax.bar(
+            [p - width / 2 for p in positions],
+            y_with,
+            width=width,
+            color="#22C55E",
+            edgecolor="#15803D",
+            linewidth=1.0,
+            label="含非FCT",
+        )
+        bars_without = ax.bar(
+            [p + width / 2 for p in positions],
+            y_without,
+            width=width,
+            color="#F59E0B",
+            edgecolor="#B45309",
+            linewidth=1.0,
+            label="不含非FCT",
+        )
         ax.set_title("按实验员FTE")
         ax.set_xlabel("实验员")
         ax.set_ylabel("FTE")
+        ax.set_xticks(list(positions))
+        ax.set_xticklabels(x)
         ax.yaxis.set_major_formatter(PercentFormatter(1.0))
-        for bar in bars:
-            h = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width() / 2, h, f"{h * 100:.1f}%", ha="center", va="bottom", fontsize=9, color="#245981")
+        ax.legend()
+        for bars in [bars_with, bars_without]:
+            for bar in bars:
+                h = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width() / 2, h, f"{h * 100:.1f}%", ha="center", va="bottom", fontsize=9, color="#245981")
 
     def _plot_efficiency_chart(self, ax: Any) -> None:
         metrics = self.chart_payloads.get("efficiency_metrics", {})
-        unique_cd_count = float(metrics.get("unique_cd_count", 0.0))
-        fte_total = float(metrics.get("fte_total", 0.0))
-        efficiency = float(metrics.get("efficiency", 0.0))
+        if not metrics:
+            ax.axis("off")
+            ax.text(0.5, 0.5, NON_OTHER_REQUIRED_MESSAGE, ha="center", va="center", color="#5D7994", transform=ax.transAxes)
+            return
 
-        labels = ["Unique(C|D)", "FTE总值", "人效"]
-        values = [unique_cd_count, fte_total, efficiency]
+        labels = [
+            "已完成分子数",
+            "实验员集合FTE值之和",
+            "人效",
+        ]
+        values = [
+            float(metrics.get("completed_molecules", 0.0)),
+            float(metrics.get("selected_researcher_fte_sum", 0.0)),
+            float(metrics.get("efficiency", 0.0)),
+        ]
         if all(v == 0 for v in values):
             ax.axis("off")
             ax.text(0.5, 0.5, "无人效统计数据", ha="center", va="center", color="#5D7994", transform=ax.transAxes)
             return
 
-        bars = ax.bar(labels, values, color=["#38BDF8", "#F59E0B", "#A78BFA"], edgecolor="#475569", linewidth=0.8)
-        ax.set_title("人效构成指标")
+        bars = ax.bar(
+            labels,
+            values,
+            color=["#38BDF8", "#F59E0B", "#8B5CF6"],
+            edgecolor="#475569",
+            linewidth=0.8,
+        )
+        ax.set_title("人效")
         ax.set_ylabel("数值")
+        ax.tick_params(axis="x", rotation=10)
         for i, bar in enumerate(bars):
             h = bar.get_height()
             fmt = f"{h:.3f}" if i == 2 else f"{h:.2f}".rstrip("0").rstrip(".")
             ax.text(bar.get_x() + bar.get_width() / 2, h, fmt, ha="center", va="bottom", fontsize=9, color="#245981")
+
+    def _plot_tat_chart(self, ax: Any) -> None:
+        df = self.chart_payloads.get("tat", pd.DataFrame())
+        message = str(self.chart_payloads.get("tat_message", "") or "")
+        if message:
+            ax.axis("off")
+            ax.text(0.5, 0.5, message, ha="center", va="center", color="#5D7994", transform=ax.transAxes)
+            return
+        if df.empty or "分子标识(C|D)" not in df.columns:
+            ax.axis("off")
+            ax.text(0.5, 0.5, "无TAT数据", ha="center", va="center", color="#5D7994", transform=ax.transAxes)
+            return
+
+        x = df["分子标识(C|D)"].astype(str).tolist()
+        y = pd.to_numeric(df["TAT(天)"], errors="coerce").fillna(0).tolist()
+        colors = ["#EF4444" if value > 10 else "#0EA5E9" for value in y]
+        edge_colors = ["#B91C1C" if value > 10 else "#0369A1" for value in y]
+        bars = ax.bar(x, y, color=colors, edgecolor=edge_colors, linewidth=1.0)
+        ax.set_title("FCT分子TAT")
+        ax.set_xlabel("分子标识(C|D)")
+        ax.set_ylabel("TAT(天)")
+        ax.tick_params(axis="x", rotation=20)
+        for bar, value in zip(bars, y):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height(),
+                f"{int(value) if float(value).is_integer() else value}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                color="#245981",
+            )
 
     def _render_table(
         self,
@@ -1213,7 +1879,9 @@ class LabKPIDashboard(QMainWindow):
                 val = row[col]
                 txt = self._format_cell(val, col, row_label, percent_cols, percent_rows)
                 item = QTableWidgetItem(txt)
-                if isinstance(val, (int, float)):
+                if isinstance(val, bool):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                elif isinstance(val, (int, float)):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
                 else:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
@@ -1240,6 +1908,9 @@ class LabKPIDashboard(QMainWindow):
 
         if isinstance(val, date):
             return val.strftime("%Y-%m-%d")
+
+        if isinstance(val, bool):
+            return "是" if val else "否"
 
         if isinstance(val, (int, float)):
             if col_name in percent_cols or row_label in percent_rows:

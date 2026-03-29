@@ -1,0 +1,7 @@
+# Repository-level Codex configuration template.
+# Adjust values to match your team's policy.
+
+model = "gpt-5.3-codex"
+reasoning_effort = "high"
+approval_policy = "on-failure"
+sandbox_mode = "danger-full-access"
